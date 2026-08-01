@@ -1,0 +1,8 @@
+# Normalise line endings so the repo stays consistent when it is cloned on a
+# machine that is not this Windows box.
+* text=auto eol=lf
+
+*.png binary
+*.jpg binary
+*.pdf binary
+*.db  binary

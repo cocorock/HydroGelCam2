@@ -1,0 +1,19 @@
+# Captured images, debug renders and the measurement database.
+storage/
+
+# The source paper. Excluded by default: the published PDF is the publisher's
+# copyright, so it should not be redistributed through a public repository, and
+# it is 11 MB of binary the code does not need. Delete this line if you have the
+# rights to include it.
+Ingri2024.pdf
+
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini

@@ -1,0 +1,522 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>HydroGelCam2 — hydrogel printability measurement</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+
+<header>
+  <h1>HydroGelCam2</h1>
+  <span class="sub">Hydrogel 3D-printability measurement &mdash; uniformity, fusion, collapse</span>
+  <span class="spacer"></span>
+  <span class="status" id="global-status"></span>
+  <button class="shutdown" id="shutdown">Disconnect &amp; shut down</button>
+</header>
+
+<nav class="tabs">
+  <button data-tab="camera" class="active">1 &middot; Camera &amp; calibration</button>
+  <button data-tab="uniformity">2 &middot; Filament uniformity</button>
+  <button data-tab="fusion">3 &middot; Filament fusion</button>
+  <button data-tab="collapse">4 &middot; Filament collapse</button>
+  <button data-tab="database">5 &middot; Database</button>
+</nav>
+
+<main>
+
+<!-- ══════════════════════════════ TAB 1 ══════════════════════════════ -->
+<section class="panel active" id="panel-camera">
+  <div class="grid sidebar">
+    <div>
+      <div class="card">
+        <h2>Camera</h2>
+        <div class="field">
+          <label for="cam-device">Device</label>
+          <select id="cam-device"></select>
+        </div>
+        <div class="row">
+          <div class="field">
+            <label for="cam-backend">Backend</label>
+            <select id="cam-backend"></select>
+          </div>
+          <div class="field">
+            <label for="cam-mode">Resolution</label>
+            <select id="cam-mode"></select>
+          </div>
+        </div>
+        <div class="row tight">
+          <button id="cam-refresh">Rescan</button>
+          <button id="cam-open" class="primary">Connect</button>
+          <button id="cam-close">Disconnect</button>
+        </div>
+        <div class="hint" id="cam-status">Not connected.</div>
+      </div>
+
+      <div class="card">
+        <h2>Image controls</h2>
+        <div id="cam-controls"><div class="hint">Connect a camera to probe its controls.</div></div>
+        <h3>Material appearance</h3>
+        <select id="cam-polarity">
+          {% for p in polarity_choices %}
+          <option value="{{ p }}" {% if p == default_polarity %}selected{% endif %}>{{ polarity_labels[p] }}</option>
+          {% endfor %}
+        </select>
+        <div class="hint">Whether the dyed material reads brighter or darker than the
+          background. Fixed by your dye and lighting, so set it once here &mdash;
+          auto-detection is only reliable when the pattern covers a clear minority
+          of the frame.</div>
+        <h3>Save as profile</h3>
+        <div class="row tight">
+          <input type="text" id="cam-profile-name" placeholder="Profile name">
+          <button id="cam-profile-save">Save</button>
+        </div>
+        <div id="cam-profile-list" class="stack" style="margin-top:8px"></div>
+      </div>
+    </div>
+
+    <div>
+      <div class="card">
+        <h2>Live view</h2>
+        <div class="viewer" id="cam-viewer">
+          <div class="placeholder">No camera connected.</div>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>Stage A &mdash; intrinsic matrix &amp; distortion</h2>
+        <div class="row">
+          <div class="field"><label>Inner corners across</label>
+            <input type="number" id="cal-cols" value="{{ defaults.board_cols }}" min="3"></div>
+          <div class="field"><label>Inner corners down</label>
+            <input type="number" id="cal-rows" value="{{ defaults.board_rows }}" min="3"></div>
+          <div class="field"><label>Checker square size (mm)</label>
+            <input type="number" id="cal-square" value="{{ defaults.square_mm }}" step="0.01" min="0.01"></div>
+        </div>
+        <div class="row tight">
+          <button id="cal-add" class="primary">Capture view</button>
+          <button id="cal-solve">Calibrate</button>
+          <button id="cal-reset">Clear set</button>
+          <span class="status" id="cal-count">0 views</span>
+        </div>
+        <div class="hint">Shoot at least {{ defaults.min_frames }} views of the board at
+          different angles and positions, filling different parts of the frame.</div>
+        <div id="cal-result" style="margin-top:10px"></div>
+        <div class="thumbs" id="cal-thumbs" style="margin-top:10px"></div>
+      </div>
+
+      <div class="card">
+        <h2>Stage B &mdash; pixel &rarr; millimetre</h2>
+        <div class="alert info">Photograph the board lying <strong>in the plane the sample
+          will occupy</strong> &mdash; the glass plate for tabs 2 and 3, the pillar front
+          face for tab 4. The checker size below is what sets the absolute scale.</div>
+        <div class="row">
+          <div class="field"><label>Inner corners across</label>
+            <input type="number" id="scale-cols" value="{{ defaults.board_cols }}" min="3"></div>
+          <div class="field"><label>Inner corners down</label>
+            <input type="number" id="scale-rows" value="{{ defaults.board_rows }}" min="3"></div>
+          <div class="field"><label><strong>Checker square size (mm)</strong></label>
+            <input type="number" id="scale-square" value="{{ defaults.square_mm }}" step="0.01" min="0.01"></div>
+          <div class="field"><label>Mode</label>
+            <select id="scale-mode">
+              <option value="scalar">Scalar (mm per pixel)</option>
+              <option value="homography">Homography (corrects tilt)</option>
+            </select></div>
+        </div>
+        <div class="row tight">
+          <button id="scale-measure" class="primary">Measure scale from current view</button>
+        </div>
+        <div id="scale-result" style="margin-top:10px"></div>
+      </div>
+
+      <div class="card">
+        <h2>Save calibration profile</h2>
+        <div class="row">
+          <div class="field"><label>Name</label><input type="text" id="calib-name" placeholder="e.g. endoscope top-down 2026-07"></div>
+          <div class="field"><label>Intended use</label>
+            <select id="calib-use">
+              <option value="top_down">Top-down (uniformity, fusion)</option>
+              <option value="lateral">Lateral (collapse)</option>
+            </select></div>
+        </div>
+        <div class="field"><label>Notes</label><input type="text" id="calib-notes"></div>
+        <div class="row tight"><button id="calib-save" class="primary">Save profile</button></div>
+        <div id="calib-list" style="margin-top:12px"></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ══════════════════════ TABS 2-4: test tabs ══════════════════════ -->
+{% for t in ["uniformity", "fusion", "collapse"] %}
+<section class="panel" id="panel-{{ t }}" data-test="{{ t }}">
+  <div class="grid test">
+    <div>
+      <div class="card">
+        <h2>Sample</h2>
+        <div class="field"><label>Name</label><input type="text" data-f="name"></div>
+        <div class="row">
+          <div class="field"><label>Replicate no.</label><input type="number" data-f="replicate_no" min="1" value="1"></div>
+          <div class="field"><label>Nozzle inner &oslash; (mm)</label><input type="number" data-f="nozzle_id_mm" step="0.01" value="0.41"></div>
+        </div>
+        <div class="row">
+          <div class="field"><label>Flow rate extrusion (mm/s)</label><input type="number" data-f="flow_rate_mms" step="0.01"></div>
+          <div class="field"><label>Feed rate (mm/s)</label><input type="number" data-f="feed_rate_mms" step="0.01" value="5"></div>
+        </div>
+        <div class="field"><label>First layer height (mm)</label><input type="number" data-f="first_layer_height_mm" step="0.01" value="0.41"></div>
+        <div class="field"><label>Notes</label><textarea data-f="notes" rows="2"></textarea></div>
+      </div>
+
+      <div class="card">
+        <h2>Calibration &amp; segmentation</h2>
+        <div class="field">
+          <label>Calibration profile</label>
+          <select data-role="calibration"></select>
+          <div class="hint" data-role="calib-hint"></div>
+        </div>
+        <div class="field">
+          <label>Material appearance</label>
+          <select data-p="polarity">
+            {% for p in polarity_choices %}
+            <option value="{{ p }}" {% if p == default_polarity %}selected{% endif %}>{{ polarity_labels[p] }}</option>
+            {% endfor %}
+          </select>
+          <div class="hint">Also sets the padding colour: black behind bright
+            material, white behind dark.</div>
+        </div>
+        <div class="row">
+          <div class="field"><label>ROI padding (px)</label>
+            <input type="number" data-p="padding" value="{{ defaults.roi_padding_px }}" min="0" step="1"></div>
+          {% if t != "collapse" %}
+          <div class="field"><label>Cleanup kernel</label>
+            <input type="number" data-p="final_kernel" value="{{ defaults.final_kernel }}" min="1" step="2"></div>
+          {% endif %}
+        </div>
+        {% if t != "collapse" %}
+        <div class="hint">Cleanup kernel is the open-then-close pass that removes
+          leftover specks and fills pinholes. Larger values clean more
+          aggressively but erode thin filaments.</div>
+        {% endif %}
+      </div>
+
+      <div class="card">
+        <h2>Test parameters</h2>
+        {% if t == "uniformity" %}
+        <div class="row">
+          <div class="field"><label>Filaments</label><input type="number" data-p="n_filaments" value="{{ defaults.uniformity_filaments }}" min="1"></div>
+          <div class="field"><label>Measurement positions</label><input type="number" data-p="n_positions" value="{{ defaults.uniformity_positions }}" min="2"></div>
+        </div>
+        <div class="field"><label>Edge inset (fraction of ROI width)</label>
+          <input type="number" data-p="edge_inset" value="0.05" step="0.01" min="0" max="0.4"></div>
+        <div class="hint">N = filaments &times; positions. The mean divides by the number of
+          measurements you leave checked, and SD by N&minus;1.</div>
+
+        {% elif t == "fusion" %}
+        <div class="field"><label>Grid size (N &times; N)</label>
+          <input type="number" data-p="grid_n" value="{{ defaults.fusion_grid_n }}" min="2"></div>
+        <div class="field"><label>Filament distances FD (mm, comma separated)</label>
+          <input type="text" data-p="fd_mm" value="{{ defaults.fusion_fd_mm|join(', ') }}"></div>
+        <div class="field"><label>Diagonal tolerance (fraction of pore spacing)</label>
+          <input type="number" data-p="diagonal_tolerance" value="0.35" step="0.05"></div>
+        <h3>Theoretical pore areas A<sub>t</sub> (mm&sup2;)</h3>
+        <div class="hint" style="margin-bottom:6px">Auto-filled as FD&sup2; (FD is the
+          edge-to-edge pore gap). Override any cell to use your own G-code value.</div>
+        <div id="fusion-at" class="stack"></div>
+
+        {% else %}
+        <div class="field"><label>Nominal gaps (mm, comma separated)</label>
+          <input type="text" data-p="gaps_mm" value="{{ defaults.collapse_gaps_mm|join(', ') }}"></div>
+        <div class="field"><label>Pillar widths (mm, comma separated)</label>
+          <input type="text" data-p="pillar_widths_mm" value="{{ defaults.collapse_pillars_mm|join(', ') }}"></div>
+        <div class="field"><label>Pillar gap height (mm)</label>
+          <input type="number" data-p="gap_height_mm" value="{{ defaults.collapse_gap_height_mm }}" step="0.1"></div>
+        <div class="field"><label>C<sub>f</sub> convention</label>
+          <select data-p="convention">
+            <option value="sag" selected>Results / Fig. 3d &mdash; 0 % flat, 100 % collapsed</option>
+            <option value="bridge">Methods &sect;2.4.3 &mdash; 100 % flat, 0 % collapsed</option>
+          </select>
+          <div class="hint">The paper states these two directions in different sections.
+            They are exact complements; the underlying geometry is stored either way, so
+            switching this never needs a re-analysis.</div></div>
+        <h3>Colours</h3>
+        <div class="hint" style="margin-bottom:7px">Click <em>Pick</em>, then click
+          the image on that material. The colour under the cursor becomes the
+          centre of the matching range.</div>
+        <div class="picker-row">
+          <span>ABS platform</span>
+          <span class="swatch" data-swatch="pillar"></span>
+          <button data-pick="pillar">Pick</button>
+        </div>
+        <div class="picker-row">
+          <span>Printed filament</span>
+          <span class="swatch" data-swatch="filament"></span>
+          <button data-pick="filament">Pick</button>
+        </div>
+        <div class="field"><label>Colour tolerance (hue &plusmn;)</label>
+          <input type="number" data-p="hue_tolerance" value="12" min="2" max="60"></div>
+        <div class="row tight">
+          <button data-act="colours-reset">Reset to defaults</button>
+        </div>
+
+        <h3>A<sub>max</sub> per gap (mm&sup2;)</h3>
+        <div class="hint" style="margin-bottom:6px">Auto-filled as gap &times; pillar height.</div>
+        <div id="collapse-amax" class="stack"></div>
+        <div class="row tight" style="margin-top:8px">
+          <button data-act="quad">Set 4-point perspective</button>
+          <button data-act="quad-clear">Clear</button>
+        </div>
+        {% endif %}
+      </div>
+    </div>
+
+    <div>
+      <div class="card">
+        <h2>Capture</h2>
+        <div class="toolbar">
+          <button data-act="capture" class="primary">Capture</button>
+          <button data-act="retake">Retake</button>
+          <button data-act="reset-roi">Reset ROI</button>
+          <label class="inline" style="flex:0 0 auto">
+            <input type="file" accept="image/*" data-act="upload" style="width:auto">
+          </label>
+          <span class="spacer"></span>
+          <span class="status" data-role="roi-readout"></span>
+        </div>
+        <div class="viewer" data-role="viewer">
+          <div class="placeholder">Capture a frame, or load an image file, to begin.
+            Then drag corner to corner on the image to set the region of interest.
+            Corner handles resize it; hold Shift and drag to move it whole.</div>
+        </div>
+        <div class="toolbar" style="margin-top:10px">
+          <button data-act="analyze" class="primary">Calculate</button>
+          <button data-act="redetect">Re-detect</button>
+          <label class="inline" style="flex:0 0 auto">
+            <input type="checkbox" data-act="debug"> <span>Show preprocessing steps</span>
+          </label>
+          <span class="spacer"></span>
+          <button data-act="save">Save to database</button>
+        </div>
+        <div data-role="flags"></div>
+      </div>
+
+      <div class="card">
+        <h2>Results</h2>
+        <div data-role="metrics"><div class="hint">No analysis yet.</div></div>
+        <div class="table-scroll" data-role="table" style="margin-top:12px"></div>
+      </div>
+
+      {% if t == "uniformity" %}
+      <div class="card">
+        <h2>Measurements</h2>
+        <div class="hint" style="margin-bottom:8px">Click a tick on the image or a row
+          here to include or exclude it. Statistics update immediately.</div>
+        <div class="checklist" data-role="checklist"></div>
+      </div>
+      {% endif %}
+
+      <div class="card" data-role="debug-card" style="display:none">
+        <h2>Preprocessing pipeline</h2>
+        <div data-role="debug"></div>
+      </div>
+    </div>
+
+    <!-- ---------------- equations ---------------- -->
+    <div>
+      <div class="card">
+        <h2>Equations</h2>
+
+        {% if t == "uniformity" %}
+        <div class="eq">
+          <h4>Uniformity index</h4>
+          <div class="formula">
+            <i>UI</i> = 1 &minus; <i>CV</i> = 1 &minus;
+            <span class="frac"><span class="num"><i>SD</i></span><span class="den"><i>D&#772;</i></span></span>
+          </div>
+          <div class="formula" style="font-size:15px">
+            <i>D&#772;</i> =
+            <span class="frac"><span class="num">1</span><span class="den"><i>N</i></span></span>
+            &sum;<i>D<sub>i</sub></i>,&nbsp;&nbsp;
+            <i>SD</i> = &radic;<span style="border-top:1px solid;padding:0 .2em">
+              <span class="frac"><span class="num">&sum;(<i>D<sub>i</sub></i> &minus; <i>D&#772;</i>)&sup2;</span><span class="den"><i>N</i> &minus; 1</span></span></span>
+          </div>
+          <dl>
+            <dt>D<sub>i</sub></dt><dd>filament thickness at one sample point</dd>
+            <dt>N</dt><dd>measurements currently checked (filaments &times; positions)</dd>
+          </dl>
+          <p class="note"><i>UI</i> = 1 is a perfectly uniform filament.
+            <i>UI</i> &rarr; 0 means scatter approaching the mean &mdash; pulsating
+            extrusion, entrapped air, a partial clog, or stick&ndash;slip flow.
+            Valid only for <i>CV</i> &lt; 1.</p>
+        </div>
+
+        <div class="eq">
+          <h4>Spreading ratio</h4>
+          <div class="formula">
+            <i>SR</i> =
+            <span class="frac"><span class="num"><i>D&#772;</i></span><span class="den"><i>D<sub>n</sub></i></span></span>
+          </div>
+          <dl>
+            <dt>D<sub>n</sub></dt><dd>nozzle inner diameter (input above)</dd>
+          </dl>
+          <p class="note"><i>SR</i> = 1 is dimensional fidelity. <i>SR</i> &gt; 1
+            is spreading &mdash; die swell, gravitational flattening, or
+            over-extrusion. <i>SR</i> &lt; 1 is stretching, from nozzle speed
+            outrunning volumetric flow or too great a print distance.</p>
+          <p class="note"><strong>UI is precision, SR is accuracy.</strong> A
+            filament can be perfectly uniform and uniformly too wide.</p>
+        </div>
+
+        {% elif t == "fusion" %}
+        <div class="eq">
+          <h4>Diffusion rate</h4>
+          <div class="formula">
+            <i>D<sub>fr</sub></i> =
+            <span class="frac"><span class="num"><i>A<sub>t</sub></i> &minus; <i>A<sub>a</sub></i></span><span class="den"><i>A<sub>t</sub></i></span></span>
+            &times; 100&thinsp;%
+          </div>
+          <dl>
+            <dt>A<sub>t</sub></dt><dd>theoretical pore area, from the design FD</dd>
+            <dt>A<sub>a</sub></dt><dd>measured pore area</dd>
+          </dl>
+          <p class="note">0&thinsp;% means no spreading (<i>A<sub>a</sub></i> =
+            <i>A<sub>t</sub></i>); 100&thinsp;% is a fully closed pore.</p>
+        </div>
+
+        <div class="eq">
+          <h4>Printability index</h4>
+          <div class="formula">
+            <i>P<sub>r</sub></i> =
+            <span class="frac"><span class="num"><i>L</i>&sup2;</span><span class="den">16&thinsp;<i>A<sub>a</sub></i></span></span>
+          </div>
+          <dl><dt>L</dt><dd>pore perimeter</dd></dl>
+          <p class="note">Referenced to an ideal square. Rounded, under-gelated
+            pores fall below 1; irregular, over-gelated pores rise above it.
+            Acceptance window {{ defaults.pr_window[0] }}&ndash;{{ defaults.pr_window[1] }} (Ouyang et al.).</p>
+        </div>
+
+        <div class="eq">
+          <h4>Circularity</h4>
+          <div class="formula">
+            <i>C</i> =
+            <span class="frac"><span class="num">4&pi;<i>A<sub>a</sub></i></span><span class="den"><i>L</i>&sup2;</span></span>
+          </div>
+          <p class="note"><i>C</i> = 1 for a circle, &pi;/4 &asymp; 0.785 for a
+            square. Cannot exceed 1 for any realisable shape.</p>
+          <p class="note"><strong>P<sub>r</sub> and C are the same
+            measurement:</strong> <i>C</i> &equiv; &pi;/(4<i>P<sub>r</sub></i>) for
+            any area and perimeter, so they can never disagree. Segmentation
+            quality is judged instead by pass-1/pass-2 area agreement and pore
+            solidity, shown as per-pore flags.</p>
+        </div>
+
+        {% else %}
+        <div class="eq">
+          <h4>Collapse factor</h4>
+          <div class="formula">
+            <i>C<sub>f</sub></i> =
+            <span class="frac"><span class="num"><i>A</i><sub>sag</sub></span><span class="den"><i>A</i><sub>max</sub></span></span>
+            &times; 100&thinsp;%
+          </div>
+          <dl>
+            <dt>A<sub>sag</sub></dt><dd>area between the pillar-top line and the filament underside</dd>
+            <dt>A<sub>max</sub></dt><dd>nominal gap &times; pillar height (total collapse)</dd>
+          </dl>
+          <p class="note">0&thinsp;% is a flat bridge; 100&thinsp;% is fully
+            collapsed, or a filament that never bridged.</p>
+          <p class="note"><strong>The source paper states both directions.</strong>
+            &sect;2.4.3 says 100&thinsp;% for a filament that does not collapse;
+            the Results and Fig.&nbsp;3d say a <em>lower</em> factor means less
+            deformation. They are exact complements, and the selector on the left
+            switches between them &mdash; the stored geometry is the same either
+            way.</p>
+        </div>
+
+        <div class="eq">
+          <h4>Deflection angle</h4>
+          <div class="formula">
+            &theta; = arctan
+            <span class="frac"><span class="num">sag depth</span><span class="den">anchor distance</span></span>
+          </div>
+          <p class="note">Between the pillar-top horizontal and the line from the
+            anchor to the deepest point of the sag. Smaller &theta; is a more
+            stable filament.</p>
+        </div>
+
+        <div class="eq">
+          <h4>Auxiliary</h4>
+          <div class="formula" style="font-size:15px">
+            <i>A<sub>t</sub></i><sup>strip</sup> = gap &times; <i>d<sub>f</sub></i>
+          </div>
+          <dl>
+            <dt>d<sub>f</sub></dt><dd>filament diameter, measured on the pillar tops where it is not deflecting</dd>
+          </dl>
+        </div>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+</section>
+{% endfor %}
+
+<!-- ══════════════════════════════ TAB 5 ══════════════════════════════ -->
+<section class="panel" id="panel-database">
+  <div class="card">
+    <h2>Stored runs</h2>
+    <div class="toolbar">
+      <select id="db-type" style="flex:0 0 190px">
+        <option value="">All test types</option>
+        <option value="uniformity">Filament uniformity</option>
+        <option value="fusion">Filament fusion</option>
+        <option value="collapse">Filament collapse</option>
+      </select>
+      <input type="text" id="db-name" placeholder="Filter by name" style="flex:0 0 200px">
+      <button id="db-refresh">Refresh</button>
+      <span class="spacer"></span>
+      <a href="/api/export/runs.csv"><button>Export measurements CSV</button></a>
+      <a href="/api/export/summary.csv"><button>Export replicate summary CSV</button></a>
+    </div>
+    <div class="table-scroll" id="db-list"></div>
+  </div>
+
+  <div class="card" id="db-detail" style="display:none">
+    <h2>Run detail</h2>
+    <div class="grid two">
+      <div>
+        <div class="toolbar" style="margin-bottom:8px">
+          <select id="db-image-toggle" style="flex:0 0 220px;display:none">
+            <option value="overlay">Measured overlay</option>
+            <option value="capture">Original capture</option>
+          </select>
+        </div>
+        <div class="viewer" id="db-viewer"><div class="placeholder">No image stored.</div></div>
+        <div class="toolbar" style="margin-top:10px">
+          <button id="db-recompute" class="primary">Recompute</button>
+          <button id="db-reanalyze">Re-analyze image</button>
+          <button id="db-save">Save changes</button>
+          <button id="db-duplicate">Duplicate</button>
+          <span class="spacer"></span>
+          <button id="db-delete" class="danger">Delete</button>
+        </div>
+        <div class="hint">Recompute re-runs the formulas over the stored measurements
+          &mdash; instant, no image processing. Re-analyze runs the full pipeline again on
+          the stored photograph.</div>
+        <div id="db-flags" style="margin-top:8px"></div>
+      </div>
+      <div>
+        <div id="db-fields"></div>
+        <h3>Results</h3>
+        <div id="db-metrics"></div>
+        <h3>Measurements</h3>
+        <div class="checklist" id="db-measurements"></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+</main>
+
+<script>window.APP_DEFAULTS = {{ defaults|tojson }};</script>
+<script type="module" src="/static/app.js"></script>
+</body>
+</html>
