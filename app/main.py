@@ -123,6 +123,15 @@ def index(request: Request):
     })
 
 
+@app.get("/favicon.ico", include_in_schema=False)
+def favicon():
+    """Browsers request this path directly, whatever the <link> tag says."""
+    path = config.STATIC_DIR / "favicon.ico"
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="No favicon.")
+    return FileResponse(path, media_type="image/x-icon")
+
+
 # ---------------------------------------------------------------- camera
 
 
