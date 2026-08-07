@@ -477,12 +477,245 @@ class TestTab {
       this.resetColours();
     }
 
+    if (this.type === "fusion") {
+      act("assign-all").onclick = () => this.armAssign({ sequential: true, next: 0 });
+      act("assign-revert").onclick = () => this.revertToAutomatic();
+    }
+
+    act("defaults-save").onclick = () => this.saveDefaults();
+    act("defaults-restore").onclick = () => this.loadDefaults();
+    act("defaults-reset").onclick = () => this.resetDefaults();
+
     this.q('[data-role="calibration"]').onchange = () => this.showCalibHint();
     this.buildParamRows();
   }
 
+  /* ------------------------------------------------- pore assignment */
+
+  armAssign(mode) {
+    if (!this.analysis?.candidates?.length) {
+      return status("Run Calculate first — there are no detected regions yet.", "bad");
+    }
+    this.assignMode = mode;
+    this.canvas?.armAssign(true);
+    this.showAssignStatus();
+    this.updateMarks();
+  }
+
+  disarmAssign() {
+    this.assignMode = null;
+    this.canvas?.armAssign(false);
+    this.showAssignStatus();
+    this.updateMarks();
+  }
+
+  showAssignStatus() {
+    const node = this.q('[data-role="assign-status"]');
+    if (!node) return;
+    if (!this.assignMode) { node.textContent = ""; return; }
+    const k = this.assignMode.sequential ? this.assignMode.next : this.assignMode.classIndex;
+    const label = this.analysis?.results?.rows?.[k]?.label ?? `class ${k + 1}`;
+    node.textContent = this.assignMode.sequential
+      ? `Click the pore for ${label} (${k + 1} of ${this.analysis.results.rows.length}), ` +
+        "or outside the ROI if it is closed. Esc to stop."
+      : `Click the pore for ${label}, or outside the ROI if it is closed. Esc to cancel.`;
+    node.style.color = "var(--accent)";
+  }
+
+  /**
+   * The assignment the table currently reflects, as class index -> choice.
+   *
+   * Rows produced by the automatic pass do not carry a candidate index, so they
+   * are matched back to a candidate by centroid; both are stored in full-frame
+   * coordinates, which makes that exact rather than approximate.
+   */
+  currentAssignment() {
+    if (this.assignment) return this.assignment;
+    const byCentroid = new Map(
+      (this.analysis?.candidates || []).map((c) =>
+        [`${Math.round(c.centroid[0])},${Math.round(c.centroid[1])}`, c.index]));
+
+    const out = {};
+    (this.analysis?.results?.rows || []).forEach((row, k) => {
+      const w = row.raw;
+      if (w.status === "closed") { out[k] = "closed"; return; }
+      if (w.candidate_index !== null && w.candidate_index !== undefined) {
+        out[k] = w.candidate_index; return;
+      }
+      const c = w.centroid;
+      out[k] = c
+        ? byCentroid.get(`${Math.round(c[0])},${Math.round(c[1])}`) ?? null
+        : null;
+    });
+    return out;
+  }
+
+  /** A click arrived while an assignment was armed. */
+  async onAssignClick(ev) {
+    if (ev.cancelled) return this.disarmAssign();
+    if (!this.assignMode) return;
+
+    const k = this.assignMode.sequential
+      ? this.assignMode.next : this.assignMode.classIndex;
+
+    let choice;
+    if (ev.markId !== null && ev.markId !== undefined) {
+      choice = ev.markId;                       // a detected region
+    } else if (!ev.inside) {
+      choice = "closed";                        // outside the ROI = fused shut
+    } else {
+      // Inside the ROI but not on a region: almost certainly a misclick, so do
+      // nothing rather than silently recording a closed pore.
+      status("No detected region there. Click a pore, or outside the ROI for closed.");
+      return;
+    }
+
+    // Seeded from whatever is on screen, so assigning one class leaves the other
+    // four pointing at the pores they already had. Sending only the class just
+    // clicked would blank the rest.
+    this.assignment = { ...this.currentAssignment(), [k]: choice };
+    this.manualClasses = new Set([...(this.manualClasses || []), k]);
+
+    if (this.assignMode.sequential && k + 1 < this.analysis.results.rows.length) {
+      this.assignMode = { sequential: true, next: k + 1 };
+      this.showAssignStatus();
+    } else {
+      this.disarmAssign();
+    }
+    await this.applyAssignment();
+  }
+
+  async applyAssignment() {
+    try {
+      const out = await post("/api/test/fusion/assign", {
+        candidates: this.analysis.candidates.map((c) => ({
+          index: c.index, aa_mm2: c.aa_mm2, perimeter_mm: c.perimeter_mm,
+          centroid: c.centroid, solidity: c.solidity,
+        })),
+        assignment: this.assignment || {},
+        manual_classes: [...(this.manualClasses || [])],
+        params: this.params(),
+      });
+      this.analysis = { ...this.analysis, ...out };
+      this.measurements = out.measurements;
+      this.render();
+    } catch (e) { status(e.message, "bad"); }
+  }
+
+  async revertToAutomatic() {
+    this.assignment = null;
+    this.manualClasses = null;
+    this.disarmAssign();
+    await this.analyze();
+  }
+
   async onShow() {
     if (!this.calibrations.length) await this.loadCalibrations();
+    // Share the in-flight load rather than guarding with a boolean set before
+    // the await: the tab-switch handler does not await this, so a second caller
+    // would otherwise sail past a load that has not finished and read fields
+    // that are still showing the factory values.
+    this.defaultsPromise ||= this.loadDefaults();
+    await this.defaultsPromise;
+  }
+
+  /* --------------------------------------------------- stored defaults */
+
+  async loadDefaults() {
+    try {
+      const stored = await api(`/api/defaults/${this.type}`);
+      if (stored.values && Object.keys(stored.values).length) {
+        this.applyDefaults(stored.values);
+      }
+      this.showDefaultsStatus(stored.updated_at);
+    } catch (e) { status(e.message, "bad"); }
+  }
+
+  /**
+   * Write a stored set into the tab's inputs.
+   *
+   * Driven off the same [data-f]/[data-p] selectors that `fields()` and
+   * `params()` read, so the list of what a tab contains lives in one place. A
+   * key with no matching input is ignored and a field with no stored value keeps
+   * its factory default, which is what lets a set saved by an older build still
+   * load after the tab gains an input.
+   */
+  applyDefaults(values) {
+    for (const [key, value] of Object.entries(values)) {
+      if (value === null || value === undefined) continue;
+      const input = this.q(`[data-f="${key}"]`) || this.q(`[data-p="${key}"]`);
+      if (!input) continue;
+      if (input.type === "checkbox") input.checked = !!value;
+      else if (Array.isArray(value)) input.value = value.join(", ");
+      else input.value = value;
+    }
+
+    // Structured values that are not plain inputs.
+    if (this.type === "fusion" && Array.isArray(values.arista_mm)) {
+      this.pendingAristas = values.arista_mm;
+      this.rebuildAristaRows?.();
+      // Rebuild reads the existing inputs, so seed them and rebuild once more.
+      const host = $("#fusion-at");
+      values.arista_mm.forEach((a, i) => {
+        const input = host.querySelector(`input[data-arista="${i}"]`);
+        if (input) input.value = a;
+      });
+      this.rebuildAristaRows?.();
+    }
+    if (this.type === "collapse" && values.hsv) {
+      for (const key of ["pillar", "filament"]) {
+        if (values.hsv[`${key}_sample`]) {
+          this.colours[key] = {
+            sample: values.hsv[`${key}_sample`],
+            ranges: values.hsv[key] || [],
+          };
+        }
+      }
+      this.paintSwatches();
+    }
+    if (this.type === "collapse") this.rebuildAmaxRows?.();
+  }
+
+  collectDefaults() {
+    const values = { ...this.fields(), ...this.params() };
+    delete values.name;
+    delete values.replicate_no;
+    if (this.type === "collapse") {
+      values.hsv = {
+        ...this.hsvParams(),
+        pillar_sample: this.colours?.pillar?.sample,
+        filament_sample: this.colours?.filament?.sample,
+      };
+    }
+    return values;
+  }
+
+  showDefaultsStatus(updatedAt) {
+    const node = this.q('[data-role="defaults-status"]');
+    if (!node) return;
+    node.textContent = updatedAt
+      ? `Using defaults saved ${updatedAt}.`
+      : "Using the factory values. Save as defaults to keep the current settings.";
+  }
+
+  async saveDefaults() {
+    try {
+      const stored = await put(`/api/defaults/${this.type}`,
+                               { values: this.collectDefaults() });
+      this.showDefaultsStatus(stored.updated_at);
+      status("Saved as the defaults for this tab.", "good");
+    } catch (e) { status(e.message, "bad"); }
+  }
+
+  async resetDefaults() {
+    if (!confirm(
+      "Discard the saved defaults for this tab and go back to the factory values?"
+    )) return;
+    try {
+      await del(`/api/defaults/${this.type}`);
+      this.showDefaultsStatus(null);
+      status("Defaults cleared. Reload the page to see the factory values.", "good");
+    } catch (e) { status(e.message, "bad"); }
   }
 
   /* ------------------------------------------------- colour sampling */
@@ -571,21 +804,43 @@ class TestTab {
 
   buildParamRows() {
     if (this.type === "fusion") {
-      const host = $("#fusion-at");
-      const rebuild = () => {
-        const fds = parseList(this.q('[data-p="fd_mm"]').value);
-        host.replaceChildren(...fds.map((fd, i) =>
-          el("div", { class: "slider-row" },
-            el("label", {}, `${fd}×${fd} mm`),
-            el("input", { type: "number", step: "0.001", value: (fd * fd).toFixed(3), "data-at": i }),
-            el("span", { class: "val" }, "mm²"))));
+      this.rebuildAristaRows = () => {
+        const host = $("#fusion-at");
+        const n = Math.max(1, parseInt(this.q('[data-p="grid_n"]').value, 10) || 5);
+        const d = parseFloat(this.q('[data-p="filament_d_mm"]').value) || 0;
+
+        // Values already typed are kept; a larger N appends the next integers
+        // rather than resetting the list, so raising the grid size does not
+        // throw away edits.
+        const current = $$("#fusion-at input[data-arista]")
+          .map((i) => parseFloat(i.value));
+        const aristas = [];
+        for (let i = 0; i < n; i++) {
+          aristas.push(Number.isFinite(current[i]) ? current[i]
+            : (Number.isFinite(D.fusion_arista_mm?.[i]) ? D.fusion_arista_mm[i] : i + 1));
+        }
+
+        host.replaceChildren(...aristas.map((a, i) => {
+          const side = a - d;
+          const at = side > 0 ? (side * side).toFixed(4) : "undefined";
+          const atCell = el("span", { class: "val" }, `Aₜ ${at}`);
+          if (side <= 0) atCell.style.color = "var(--bad)";
+          return el("div", { class: "slider-row" },
+            el("label", {}, `Class ${i + 1} — a`),
+            el("input", {
+              type: "number", step: "0.01", min: "0", value: a, "data-arista": i,
+              onchange: () => this.rebuildAristaRows(),
+            }),
+            atCell);
+        }));
       };
-      this.q('[data-p="fd_mm"]').addEventListener("change", rebuild);
-      rebuild();
+      this.q('[data-p="grid_n"]').addEventListener("change", () => this.rebuildAristaRows());
+      this.q('[data-p="filament_d_mm"]').addEventListener("change", () => this.rebuildAristaRows());
+      this.rebuildAristaRows();
     }
     if (this.type === "collapse") {
       const host = $("#collapse-amax");
-      const rebuild = () => {
+      this.rebuildAmaxRows = () => {
         const gaps = parseList(this.q('[data-p="gaps_mm"]').value);
         const h = parseFloat(this.q('[data-p="gap_height_mm"]').value) || 6;
         host.replaceChildren(...gaps.map((g, i) =>
@@ -594,9 +849,9 @@ class TestTab {
             el("input", { type: "number", step: "0.001", value: (g * h).toFixed(3), "data-amax": i }),
             el("span", { class: "val" }, "mm²"))));
       };
-      this.q('[data-p="gaps_mm"]').addEventListener("change", rebuild);
-      this.q('[data-p="gap_height_mm"]').addEventListener("change", rebuild);
-      rebuild();
+      this.q('[data-p="gaps_mm"]').addEventListener("change", () => this.rebuildAmaxRows());
+      this.q('[data-p="gap_height_mm"]').addEventListener("change", () => this.rebuildAmaxRows());
+      this.rebuildAmaxRows();
     }
   }
 
@@ -604,7 +859,7 @@ class TestTab {
     const p = {};
     this.qa("[data-p]").forEach((input) => {
       const key = input.dataset.p;
-      if (key === "fd_mm" || key === "gaps_mm" || key === "pillar_widths_mm") {
+      if (key === "gaps_mm" || key === "pillar_widths_mm") {
         p[key] = parseList(input.value);
       } else if (input.type === "number") {
         p[key] = parseFloat(input.value);
@@ -615,9 +870,7 @@ class TestTab {
     p.nozzle_id_mm = parseFloat(this.q('[data-f="nozzle_id_mm"]').value);
 
     if (this.type === "fusion") {
-      const at = {};
-      $$("#fusion-at input").forEach((i) => { at[i.dataset.at] = parseFloat(i.value); });
-      p.at_mm2 = at;
+      p.arista_mm = $$("#fusion-at input[data-arista]").map((i) => parseFloat(i.value));
     }
     if (this.type === "collapse") {
       const amax = {};
@@ -688,6 +941,7 @@ class TestTab {
         },
         onMarkClick: (id) => this.toggleMeasurement(id),
         onPick: (key, sample) => this.onColourPicked(key, sample),
+        onAssign: (ev) => this.onAssignClick(ev),
       });
     }
     await this.canvas.setImage(r.url, this.roi);
@@ -700,6 +954,9 @@ class TestTab {
     this.roi = null;
     this.analysis = null;
     this.measurements = [];
+    this.assignment = null;
+    this.manualClasses = null;
+    this.assignMode = null;
     this.canvas = null;
     this.q('[data-role="viewer"]').replaceChildren(
       el("div", { class: "placeholder" },
@@ -721,6 +978,12 @@ class TestTab {
     // never be mistaken for the current run.
     this.q('[data-role="debug-card"]').style.display = "none";
     this.q('[data-role="debug"]').replaceChildren();
+
+    // A fresh detection supersedes any manual assignment: the candidate indices
+    // it referred to belong to the previous run and mean nothing now.
+    this.assignment = null;
+    this.manualClasses = null;
+    if (this.assignMode) this.disarmAssign();
 
     try {
       status("Analysing…");
@@ -810,22 +1073,40 @@ class TestTab {
       metric("Mean circularity", num(r.mean_circularity, 4), "C (square = 0.785)"),
       metric("Pores", `${r.n_open} open / ${r.n_closed} closed`, `of ${r.n_pores}`)));
 
-    const head = ["Pore", "Nominal", "Centroid", "Status", "At mm²", "Aa mm²",
-      "L mm", "Dfr %", "Pr", "C", "Flags"];
+    this.q('[data-role="assign-card"]').style.display =
+      this.analysis.candidates?.length ? "block" : "none";
+
+    const head = ["", "Pore", "a mm", "Centroid", "Status", "Source", "At mm²",
+      "Aa mm²", "L mm", "Dfr %", "Pr", "C", "Flags"];
     this.q('[data-role="table"]').replaceChildren(el("table", {},
       el("thead", {}, el("tr", {}, ...head.map((h) => el("th", {}, h)))),
-      el("tbody", {}, ...r.rows.map((row) => {
+      el("tbody", {}, ...r.rows.map((row, k) => {
         const w = row.raw;
         const prCell = el("td", { class: "num" }, num(w.pr, 4));
         if (w.pr_in_window === false) prCell.style.color = "var(--warn)";
+
+        const armed = this.assignMode && !this.assignMode.sequential
+          && this.assignMode.classIndex === k;
+        const assignBtn = el("button", {
+          class: armed ? "armed" : "",
+          style: "padding:1px 8px;font-size:11px",
+          onclick: () => (armed ? this.disarmAssign()
+            : this.armAssign({ classIndex: k })),
+        }, armed ? "Click…" : "Assign");
+
+        const manual = (w.selection || "auto").startsWith("manual");
         return el("tr", {},
+          el("td", {}, assignBtn),
           el("td", {}, `#${w.size_class}`),
-          el("td", {}, row.label),
+          el("td", { class: "num" }, num(w.arista_mm, 2)),
           el("td", { class: "num" }, w.centroid
             ? `${w.centroid.map((v) => Math.round(v)).join(", ")}` : "—"),
           el("td", {}, el("span", {
             class: `pill ${w.status === "open" ? "good" : w.status === "closed" ? "warn" : "bad"}`,
           }, w.status)),
+          el("td", {}, el("span", {
+            class: `pill ${manual ? "warn" : ""}`,
+          }, manual ? "manual" : "auto")),
           el("td", { class: "num" }, num(w.at_mm2, 3)),
           el("td", { class: "num" }, num(w.aa_mm2, 3)),
           el("td", { class: "num" }, num(w.perimeter_mm, 3)),
@@ -895,13 +1176,31 @@ class TestTab {
         });
       }
     } else if (this.type === "fusion") {
-      const off = this.analysis.offset || [0, 0];
-      for (const row of this.analysis.results.rows) {
+      // Which candidate is currently standing in for which size class, matched
+      // on centroid because a row does not otherwise carry its candidate index
+      // when it came from the automatic pass.
+      const assignedTo = new Map();
+      (this.analysis.results.rows || []).forEach((row, k) => {
         const c = row.raw.centroid;
-        if (!c) continue;
+        if (!c) return;
+        assignedTo.set(`${Math.round(c[0])},${Math.round(c[1])}`, k + 1);
+      });
+
+      for (const cand of this.analysis.candidates || []) {
+        const key = `${Math.round(cand.centroid[0])},${Math.round(cand.centroid[1])}`;
+        const sizeClass = assignedTo.get(key);
         marks.push({
-          kind: "point", id: row.index_no, included: row.included,
-          x: c[0] + off[0], y: c[1] + off[1], r: 6, label: row.label,
+          kind: "pore", id: cand.index,
+          x: cand.centroid[0], y: cand.centroid[1],
+          points: cand.polygon,
+          area: cand.area_px,
+          // Yellow contour, green centroid. An assigned pore is drawn brighter
+          // and thicker, and carries its size-class number.
+          color: sizeClass ? "#ff9d2d" : "#ffd23f",
+          centroidColor: "#25e06a",
+          lineWidth: sizeClass ? 3 : 1.5,
+          label: sizeClass ? String(sizeClass) : "",
+          labelColor: "#ff9d2d",
         });
       }
     } else {

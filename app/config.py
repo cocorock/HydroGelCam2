@@ -94,6 +94,13 @@ UNIFORMITY_EDGE_INSET = 0.05  # fraction of ROI width kept clear at each end
 
 # Tab 3 - filament fusion
 FUSION_GRID_N = 5
+# Arista (design nozzle-path spacing) per size class, and the filament diameter
+# shared across them. The theoretical pore is what is left between two filaments
+# laid a apart:  At = (a - d)^2.
+FUSION_ARISTA_MM = (1.0, 2.0, 3.0, 4.0, 5.0)
+FUSION_FILAMENT_D_MM = 0.41
+# Legacy: earlier runs stored a filament-distance list with At = FD^2 taken
+# edge-to-edge. Kept so a saved run from before the change still re-analyses.
 FUSION_FD_MM = (1.0, 2.0, 3.0, 4.0, 5.0)
 FUSION_DIAGONAL_TOLERANCE = 0.35  # fraction of mean pore spacing
 PR_ACCEPT_LOW = 0.9               # Ouyang et al. acceptance window
@@ -104,6 +111,11 @@ SOLIDITY_MIN = 0.85
 # the largest pore found; extent is area over bounding-box area.
 PORE_MIN_AREA_FRACTION = 0.02
 PORE_MIN_EXTENT = 0.50
+# Contour simplification used only to draw a candidate pore in the browser, as a
+# fraction of its perimeter. Every reported metric is measured from the full
+# pixel-accurate contour; this exists so twenty-five boundaries of a thousand
+# points each do not dominate the response.
+PORE_POLYGON_EPSILON = 0.004
 
 # Tab 4 - filament collapse (ABS platform, Ultimaker 3 Extended)
 COLLAPSE_PILLAR_WIDTHS_MM = (10.0, 2.0, 2.0, 2.0, 2.0, 2.0, 10.0)

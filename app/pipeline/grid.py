@@ -38,6 +38,11 @@ class GridResult:
     grid_mask: np.ndarray
     final_mask: np.ndarray
     pores: list[Pore]
+    # Every enclosed region that survived the pass-1 filters, *before* the
+    # lattice assignment narrowed them down. When a print is bad it is usually
+    # the lattice step that misfires -- broken walls, merged cells -- so the
+    # region the operator actually wants may not be among `pores` at all.
+    candidates: list[dict]
     n_rows: int
     n_cols: int
     complete: bool
@@ -91,7 +96,7 @@ def detect_grid(
                        "detected walls.")
 
     # ---- step 8: two-pass contour extraction ------------------------------
-    pores, complete, message = _two_pass_contours(
+    pores, candidates, complete, message = _two_pass_contours(
         grid_mask, final_mask, n, trace, seg
     )
 
@@ -99,6 +104,7 @@ def detect_grid(
         grid_mask=grid_mask,
         final_mask=final_mask,
         pores=pores,
+        candidates=candidates,
         n_rows=n,
         n_cols=n,
         complete=complete,
@@ -219,7 +225,7 @@ def _two_pass_contours(
     n: int,
     trace: DebugTrace,
     seg: Segmentation,
-) -> tuple[list[Pore], bool, str]:
+) -> tuple[list[Pore], list[dict], bool, str]:
     """Pass 1 finds expected pore positions; pass 2 re-contours each one locally."""
     # Pass 1: pores are the holes in the material, so invert inside the grid.
     inside = cv2.bitwise_and(cv2.bitwise_not(final_mask), grid_mask)
@@ -257,7 +263,11 @@ def _two_pass_contours(
         if row_cells and col_cells and r < len(row_cells) and c < len(col_cells):
             cell = (col_cells[c][0], row_cells[r][0],
                     col_cells[c][1], row_cells[r][1])
-        pores.append(_refine(blob, final_mask, r, c, cell))
+        pore = _refine(blob, final_mask, r, c, cell)
+        # Back-reference, so the caller can mark which candidates the automatic
+        # pass ended up choosing without comparing geometry.
+        blob["pore"] = pore
+        pores.append(pore)
 
     if trace.enabled and pores:
         vis = cv2.cvtColor(seg.flat, cv2.COLOR_GRAY2BGR)
@@ -272,7 +282,7 @@ def _two_pass_contours(
                   "expected pore position.")
 
     _ = cols
-    return pores, complete, message
+    return pores, blobs, complete, message
 
 
 def _components_inside(inside: np.ndarray, grid_mask: np.ndarray,

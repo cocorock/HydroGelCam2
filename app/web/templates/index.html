@@ -203,6 +203,12 @@
 
       <div class="card">
         <h2>Test parameters</h2>
+        <div class="toolbar" style="margin-bottom:10px">
+          <button data-act="defaults-save">Save as defaults</button>
+          <button data-act="defaults-restore">Restore defaults</button>
+          <button data-act="defaults-reset">Reset to factory</button>
+        </div>
+        <div class="hint" style="margin:-4px 0 10px" data-role="defaults-status"></div>
         {% if t == "uniformity" %}
         <div class="row">
           <div class="field"><label>Filaments</label><input type="number" data-p="n_filaments" value="{{ defaults.uniformity_filaments }}" min="1"></div>
@@ -216,13 +222,15 @@
         {% elif t == "fusion" %}
         <div class="field"><label>Grid size (N &times; N)</label>
           <input type="number" data-p="grid_n" value="{{ defaults.fusion_grid_n }}" min="2"></div>
-        <div class="field"><label>Filament distances FD (mm, comma separated)</label>
-          <input type="text" data-p="fd_mm" value="{{ defaults.fusion_fd_mm|join(', ') }}"></div>
+        <div class="field"><label>Filament diameter <i>d</i> (mm)</label>
+          <input type="number" data-p="filament_d_mm"
+                 value="{{ defaults.fusion_filament_d_mm }}" step="0.01" min="0"></div>
         <div class="field"><label>Diagonal tolerance (fraction of pore spacing)</label>
           <input type="number" data-p="diagonal_tolerance" value="0.35" step="0.05"></div>
-        <h3>Theoretical pore areas A<sub>t</sub> (mm&sup2;)</h3>
-        <div class="hint" style="margin-bottom:6px">Auto-filled as FD&sup2; (FD is the
-          edge-to-edge pore gap). Override any cell to use your own G-code value.</div>
+        <h3>Arista <i>a</i> per size class (mm)</h3>
+        <div class="hint" style="margin-bottom:6px">One row per grid position, so the
+          count follows N. A<sub>t</sub> = (<i>a</i> &minus; <i>d</i>)&sup2; is shown
+          alongside and cannot be edited directly &mdash; change <i>a</i> or <i>d</i>.</div>
         <div id="fusion-at" class="stack"></div>
 
         {% else %}
@@ -307,6 +315,24 @@
         <div class="table-scroll" data-role="table" style="margin-top:12px"></div>
       </div>
 
+      {% if t == "fusion" %}
+      <div class="card" data-role="assign-card" style="display:none">
+        <h2>Pore assignment</h2>
+        <div class="hint" style="margin-bottom:8px">Every detected region is drawn
+          with a <span style="color:#ffd23f">yellow contour</span> and a
+          <span style="color:#25e06a">green centroid</span>. Use <em>Assign</em> on a
+          row to point that size class at a different region &mdash; click the pore
+          or its centroid. Clicking <strong>outside the ROI</strong> records that
+          class as a closed pore. Esc cancels.</div>
+        <div class="toolbar">
+          <button data-act="assign-all">Assign all sequentially</button>
+          <button data-act="assign-revert">Revert to automatic</button>
+          <span class="spacer"></span>
+          <span class="status" data-role="assign-status"></span>
+        </div>
+      </div>
+      {% endif %}
+
       {% if t == "uniformity" %}
       <div class="card">
         <h2>Measurements</h2>
@@ -377,11 +403,29 @@
             &times; 100&thinsp;%
           </div>
           <dl>
-            <dt>A<sub>t</sub></dt><dd>theoretical pore area, from the design FD</dd>
+            <dt>A<sub>t</sub></dt><dd>theoretical pore area, below</dd>
             <dt>A<sub>a</sub></dt><dd>measured pore area</dd>
           </dl>
           <p class="note">0&thinsp;% means no spreading (<i>A<sub>a</sub></i> =
             <i>A<sub>t</sub></i>); 100&thinsp;% is a fully closed pore.</p>
+        </div>
+
+        <div class="eq">
+          <h4>Theoretical pore area</h4>
+          <div class="formula">
+            <i>A<sub>t</sub></i> = (<i>a</i> &minus; <i>d</i>)&sup2;
+          </div>
+          <dl>
+            <dt>a</dt><dd>arista &mdash; design nozzle-path spacing for that size class</dd>
+            <dt>d</dt><dd>filament diameter, shared across classes</dd>
+          </dl>
+          <p class="note">The open pore is what is left between two filaments laid
+            <i>a</i> apart, so it is smaller than <i>a</i> by one filament width.
+            With <i>a</i> = 1 mm and <i>d</i> = 0.41 mm the pore is 0.59 mm across
+            and <i>A<sub>t</sub></i> = 0.348 mm&sup2; &mdash; the label
+            &ldquo;<i>a</i> = 1 mm&rdquo; names the <em>spacing</em>, not the
+            opening. Undefined when <i>a</i> &le; <i>d</i>: the design leaves no
+            pore at all.</p>
         </div>
 
         <div class="eq">

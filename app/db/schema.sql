@@ -96,3 +96,14 @@ CREATE TABLE IF NOT EXISTS measurement (
 );
 
 CREATE INDEX IF NOT EXISTS idx_meas_run ON measurement(test_run_id, index_no);
+
+-- Per-tab starting values, so a rig that never changes is not re-entered every
+-- session. One row per test type; values_json is a flat {field: value} map, so
+-- a tab gaining an input needs no schema change. Unknown keys are ignored on
+-- load and missing keys fall back to the factory values in config.py, which
+-- keeps a default set saved by an older build usable.
+CREATE TABLE IF NOT EXISTS tab_defaults (
+    test_type   TEXT PRIMARY KEY,
+    values_json TEXT NOT NULL DEFAULT '{}',
+    updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
+);

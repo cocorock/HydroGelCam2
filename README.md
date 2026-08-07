@@ -68,6 +68,36 @@ The collapse tab defaults to the **whole frame**, because that test derives its
 pillar and gap positions from the platform's full 51 mm width — cropping into
 the platform rescales every result. The app flags it if you do.
 
+### Choosing pores by hand (fusion tab)
+
+The lattice step is what misfires on a bad print — walls break, cells merge — so
+after *Calculate* every detected region is drawn with a **yellow contour** and a
+**green centroid**, not just the five the automatic pass chose. The ones in use
+are drawn brighter and carry their size-class number.
+
+**Assign** on a results row points that class at a different region: click the
+pore or its centroid. **Assign all sequentially** walks from class 1 to N.
+Clicking **outside the ROI** records that class as a closed pore (`Aa` = 0,
+`Dfr` = 100 %); clicking inside on empty space is ignored rather than guessed.
+Esc cancels, and **Revert to automatic** re-runs the detection.
+
+Classes you do not touch keep the pore the automatic pass gave them, and each row
+records whether it was chosen automatically or by hand. That provenance shows in
+the results table, is stored with the run, and appears in the CSV — for a number
+that ends up in a paper, being able to say which pores were operator-selected is
+worth having. Two classes landing on the same region is flagged.
+
+### Saved defaults (tabs 2–4)
+
+Each test tab has **Save as defaults**, **Restore defaults** and **Reset to
+factory**. Saving snapshots the current parameters into the database so they
+come back on the next launch. Nothing is captured automatically — a value typed
+once for an odd sample should not silently become the new normal.
+
+**Name and Replicate no. are never stored**, since carrying yesterday's sample
+name forward is how a run ends up mislabelled. A stored set that predates a new
+input still loads; the missing field just falls back to its factory value.
+
 ### Colours (collapse tab)
 
 Two eyedroppers set the segmentation: click **Pick**, then click the ABS platform
@@ -111,8 +141,18 @@ A_max = nominal gap × 6 mm pillar height
 can be displayed at any time without re-analysing an image. The active
 convention is written into every results table and CSV export.
 
-**`At` for the fusion test** is `FD²` — FD is taken as the edge-to-edge pore gap,
-so nominal pores are exactly 1×1 … 5×5 mm. Every value is editable per pore.
+**`At` for the fusion test** is `(a − d)²`, where `a` is the arista (the design
+nozzle-path spacing for that size class) and `d` the filament diameter shared
+across classes. The open pore is what is left between two filaments laid `a`
+apart, so it is one filament width smaller than `a`: at `a` = 1 mm and
+`d` = 0.41 mm the pore is 0.59 mm across and `At` = 0.348 mm². The label
+"a = 1 mm" names the **spacing**, not the opening. `At` is undefined when
+`a ≤ d` and is refused rather than divided by — a non-positive `At` would make
+`Dfr` read as heavy spreading when the design simply leaves no pore.
+
+There is one arista input per grid position, so the count follows N; raising N
+appends the next integers and keeps whatever you have typed. Runs saved before
+this change carry their own stored `at_mm2` and re-score exactly as before.
 
 **Uniformity N** is `filaments × positions`, default 6 × 5 = 30. The paper's
 formulas divide by 25; here the mean divides by the number of measurements left

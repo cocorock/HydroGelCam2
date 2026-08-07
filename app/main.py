@@ -109,7 +109,8 @@ def index(request: Request):
             "uniformity_filaments": config.UNIFORMITY_FILAMENTS,
             "uniformity_positions": config.UNIFORMITY_POSITIONS,
             "fusion_grid_n": config.FUSION_GRID_N,
-            "fusion_fd_mm": list(config.FUSION_FD_MM),
+            "fusion_arista_mm": list(config.FUSION_ARISTA_MM),
+            "fusion_filament_d_mm": config.FUSION_FILAMENT_D_MM,
             "collapse_gaps_mm": list(config.COLLAPSE_GAPS_MM),
             "collapse_pillars_mm": list(config.COLLAPSE_PILLAR_WIDTHS_MM),
             "collapse_gap_height_mm": config.COLLAPSE_GAP_HEIGHT_MM,
@@ -446,6 +447,25 @@ def test_analyze(test_type: str, payload: dict):
     return out
 
 
+@app.post("/api/test/fusion/assign")
+def fusion_assign(payload: dict):
+    """Re-score the fusion table from an operator's manual choice of pores.
+
+    No image processing: the candidates already carry their measured area and
+    perimeter, so this is the formulas only.
+    """
+    try:
+        return fusion.assign(
+            payload.get("candidates") or [],
+            payload.get("assignment") or {},
+            payload.get("params") or {},
+            payload.get("manual_classes") or [],
+        )
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=422,
+                            detail=f"{type(exc).__name__}: {exc}")
+
+
 @app.post("/api/test/{test_type}/recompute")
 def test_recompute(test_type: str, payload: dict):
     """Re-run the formulas over stored measurements, with no image processing."""
@@ -461,6 +481,42 @@ def test_recompute(test_type: str, payload: dict):
         return {"results": collapse.compute(
             measurements, params.get("convention", config.CF_CONVENTION))}
     raise HTTPException(status_code=404, detail=f"Unknown test '{test_type}'.")
+
+
+# ---------------------------------------------------------------- tab defaults
+
+# Fields deliberately never stored. Carrying a sample name or replicate number
+# from one session into the next is how a run ends up mislabelled.
+DEFAULTS_EXCLUDED = {"name", "replicate_no"}
+
+
+@app.get("/api/defaults/{test_type}")
+def defaults_get(test_type: str):
+    _check_test_type(test_type)
+    stored = repo.get_tab_defaults(test_type)
+    return stored or {"test_type": test_type, "values": {}, "updated_at": None}
+
+
+@app.put("/api/defaults/{test_type}")
+def defaults_save(test_type: str, payload: dict):
+    _check_test_type(test_type)
+    values = {k: v for k, v in (payload.get("values") or {}).items()
+              if k not in DEFAULTS_EXCLUDED}
+    repo.save_tab_defaults(test_type, values)
+    return repo.get_tab_defaults(test_type)
+
+
+@app.delete("/api/defaults/{test_type}")
+def defaults_clear(test_type: str):
+    """Drop the stored set so the factory values in config.py return."""
+    _check_test_type(test_type)
+    repo.clear_tab_defaults(test_type)
+    return {"test_type": test_type, "values": {}, "updated_at": None}
+
+
+def _check_test_type(test_type: str) -> None:
+    if test_type not in config.TEST_TYPES:
+        raise HTTPException(status_code=404, detail=f"Unknown test '{test_type}'.")
 
 
 # ---------------------------------------------------------------- runs

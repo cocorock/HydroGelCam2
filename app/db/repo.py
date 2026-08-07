@@ -263,6 +263,39 @@ def set_measurement_included(measurement_id: int, included: bool) -> None:
     db().commit()
 
 
+# ---------------------------------------------------------------- tab defaults
+
+
+def get_tab_defaults(test_type: str) -> dict[str, Any] | None:
+    row = db().execute(
+        "SELECT * FROM tab_defaults WHERE test_type = ?", (test_type,)
+    ).fetchone()
+    if row is None:
+        return None
+    try:
+        values = json.loads(row["values_json"])
+    except (json.JSONDecodeError, TypeError):
+        values = {}
+    return {"test_type": row["test_type"], "values": values,
+            "updated_at": row["updated_at"]}
+
+
+def save_tab_defaults(test_type: str, values: dict[str, Any]) -> None:
+    db().execute(
+        "INSERT INTO tab_defaults (test_type, values_json, updated_at) "
+        "VALUES (?, ?, datetime('now')) "
+        "ON CONFLICT(test_type) DO UPDATE SET "
+        "  values_json = excluded.values_json, updated_at = excluded.updated_at",
+        (test_type, json.dumps(values)),
+    )
+    db().commit()
+
+
+def clear_tab_defaults(test_type: str) -> None:
+    db().execute("DELETE FROM tab_defaults WHERE test_type = ?", (test_type,))
+    db().commit()
+
+
 def list_runs(
     test_type: str | None = None,
     name: str | None = None,

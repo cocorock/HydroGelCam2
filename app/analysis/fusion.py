@@ -29,6 +29,47 @@ from app.pipeline.debug import DebugTrace
 from app.pipeline.grid import Pore, detect_grid
 
 
+def theoretical_area(arista_mm: float, filament_d_mm: float) -> float | None:
+    """Open area of a square pore bounded by filaments a apart: (a - d)^2.
+
+    None when the filament is as wide as the spacing, because there is no pore
+    to speak of. A non-positive At has to be refused rather than divided by --
+    Dfr would come back as a large positive number and read as heavy spreading
+    when the truth is that the design itself leaves no opening.
+    """
+    side = float(arista_mm) - float(filament_d_mm)
+    return side * side if side > 0 else None
+
+
+def _size_classes(params: dict[str, Any], n: int) -> tuple[list[float], float]:
+    """Arista per class and the shared filament diameter, padded to n classes."""
+    aristas = [float(v) for v in
+               (params.get("arista_mm") or config.FUSION_ARISTA_MM)]
+    # A shorter list than the grid is extended with the next integers, matching
+    # what the arista inputs do when the grid size is raised.
+    while len(aristas) < n:
+        aristas.append(float(len(aristas) + 1))
+    d = float(params.get("filament_d_mm", config.FUSION_FILAMENT_D_MM))
+    return aristas[:n], d
+
+
+def _resolve_at(k: int, arista: float, d: float,
+                overrides: dict[Any, Any]) -> tuple[float | None, str | None]:
+    """At for one size class, honouring a stored override. Returns (At, warning)."""
+    override = overrides.get(str(k), overrides.get(k))
+    if override is not None:
+        return float(override), None
+
+    at = theoretical_area(arista, d)
+    if at is None:
+        return None, (
+            f"Size class {k + 1}: arista {arista:g} mm is not larger than the "
+            f"filament diameter {d:g} mm, so the design leaves no open pore and "
+            "the theoretical area is undefined."
+        )
+    return at, None
+
+
 def analyze(
     image: np.ndarray,
     roi_json: dict[str, Any] | None,
@@ -37,7 +78,7 @@ def analyze(
     debug: bool = False,
 ) -> dict[str, Any]:
     n = int(params.get("grid_n", config.FUSION_GRID_N))
-    fd_list = [float(v) for v in params.get("fd_mm", config.FUSION_FD_MM)]
+    aristas, filament_d = _size_classes(params, n)
     tolerance = float(params.get("diagonal_tolerance", config.FUSION_DIAGONAL_TOLERANCE))
     at_overrides = params.get("at_mm2") or {}
 
@@ -72,28 +113,32 @@ def analyze(
         flags.append(grid.message)
 
     for k, pore in enumerate(selected):
-        fd = fd_list[k] if k < len(fd_list) else (k + 1.0)
-        at_default = fd * fd                       # At = FD^2, edge-to-edge pores
-        at = float(at_overrides.get(str(k), at_overrides.get(k, at_default)))
+        arista = aristas[k]
+        at, warning = _resolve_at(k, arista, filament_d, at_overrides)
+        if warning:
+            flags.append(warning)
+
+        geom = {"arista_mm": arista, "filament_d_mm": filament_d,
+                "offset": seg.offset}
 
         if pore is None:
-            flags.append(f"No pore found for the {fd:g}x{fd:g} mm size class.")
-            measurements.append(_row(k, fd, at, None, None, None, [], "missing"))
+            flags.append(f"No pore found for the {arista:g} mm size class.")
+            measurements.append(
+                _row(k, arista, at, None, None, None, [], "missing", **geom))
             continue
 
         if pore.closed:
             # Complete fusion at minimum spacing is a valid result, not a
             # detection failure: Aa = 0, and the shape metrics do not exist.
             measurements.append(
-                _row(k, fd, at, pore, 0.0, 0.0, ["closed"], "closed")
-            )
+                _row(k, arista, at, pore, 0.0, 0.0, ["closed"], "closed", **geom))
             continue
 
         area_mm2 = scale.area_mm2(pore.contour)
         perim_mm = scale.perimeter_mm(pore.contour)
         measurements.append(
-            _row(k, fd, at, pore, area_mm2, perim_mm, list(pore.flags), "open")
-        )
+            _row(k, arista, at, pore, area_mm2, perim_mm, list(pore.flags),
+                 "open", **geom))
 
     results = compute(measurements)
     results["grid_complete"] = grid.complete
@@ -115,13 +160,143 @@ def analyze(
         # summary can aggregate them without re-deriving.
         "measurements": results["rows"],
         "results": results,
+        # Every region the segmentation found, so the operator can override the
+        # lattice's choice when a bad print confuses it.
+        "candidates": _candidates(grid, scale, seg.offset, selected),
         "flags": flags,
         "roi": seg.roi.as_dict(),
         "threshold": seg.threshold,
         "polarity": seg.polarity,
         "offset": list(seg.offset),
+        "arista_mm": aristas,
+        "filament_d_mm": filament_d,
         "debug": trace.to_json(),
     }
+
+
+def _candidates(grid, scale: Scale, offset: tuple[int, int],
+                selected: list[Pore | None]) -> list[dict[str, Any]]:
+    """Describe every detected region in full-frame coordinates.
+
+    Areas and perimeters come from the *full* contour. `polygon` is a simplified
+    copy for drawing only: a pore boundary traced pixel by pixel runs to well
+    over a thousand points, and sending twenty-five of those would dominate the
+    response for no measurable benefit.
+    """
+    chosen = {id(p) for p in selected if p is not None}
+    ox, oy = offset
+
+    out: list[dict[str, Any]] = []
+    for i, blob in enumerate(grid.candidates):
+        contour = blob["contour"]
+        if contour is None or len(contour) < 3:
+            continue
+
+        epsilon = config.PORE_POLYGON_EPSILON * cv2.arcLength(contour, True)
+        simplified = cv2.approxPolyDP(contour, max(epsilon, 1.0), True)
+
+        cx, cy = blob["centroid"]
+        out.append({
+            "index": i,
+            "centroid": [cx + ox, cy + oy],
+            "polygon": [[float(px) + ox, float(py) + oy]
+                        for px, py in simplified.reshape(-1, 2)],
+            "aa_mm2": scale.area_mm2(contour),
+            "perimeter_mm": scale.perimeter_mm(contour),
+            "area_px": float(blob["area"]),
+            "solidity": blob.get("solidity"),
+            "auto_selected": id(blob.get("pore")) in chosen,
+        })
+    return out
+
+
+def assign(
+    candidates: list[dict[str, Any]],
+    assignment: dict[Any, Any],
+    params: dict[str, Any],
+    manual_classes: Any = None,
+) -> dict[str, Any]:
+    """Build the measurement rows from an operator's choice of pores.
+
+    `assignment` maps a size-class index to either a candidate index, the string
+    "closed", or None for "leave unassigned", and covers *every* class -- classes
+    the operator did not touch carry the pore the automatic pass gave them.
+
+    `manual_classes` names the classes the operator actually clicked, so the
+    untouched ones are still recorded as automatic. Without it a single manual
+    correction would mark the whole table as hand-picked, which is exactly the
+    distinction the flag exists to preserve.
+
+    Rows are built through the same `_row` helper the automatic path uses, which
+    is why this lives on the server: that helper is the one definition of a
+    measurement row, and tab 5 and both CSV exports read the keys it produces.
+    """
+    n = int(params.get("grid_n", config.FUSION_GRID_N))
+    aristas, filament_d = _size_classes(params, n)
+    at_overrides = params.get("at_mm2") or {}
+    by_index = {int(c["index"]): c for c in candidates}
+    manual = {int(k) for k in (manual_classes or [])}
+
+    measurements: list[dict[str, Any]] = []
+    flags: list[str] = []
+
+    for k in range(n):
+        arista = aristas[k]
+        at, warning = _resolve_at(k, arista, filament_d, at_overrides)
+        if warning:
+            flags.append(warning)
+
+        geom = {"arista_mm": arista, "filament_d_mm": filament_d}
+        choice = assignment.get(str(k), assignment.get(k))
+        by_hand = k in manual
+
+        if choice == "closed":
+            measurements.append(
+                _row(k, arista, at, None, 0.0, 0.0, ["closed"], "closed",
+                     selection="manual_closed" if by_hand else "auto", **geom))
+            continue
+
+        if choice is None:
+            measurements.append(
+                _row(k, arista, at, None, None, None, [], "missing",
+                     selection="manual" if by_hand else "auto", **geom))
+            continue
+
+        candidate = by_index.get(int(choice))
+        if candidate is None:
+            flags.append(f"Size class {k + 1}: no such detected region.")
+            measurements.append(
+                _row(k, arista, at, None, None, None, [], "missing",
+                     selection="manual" if by_hand else "auto", **geom))
+            continue
+
+        measurements.append(_row(
+            k, arista, at, None,
+            float(candidate["aa_mm2"]), float(candidate["perimeter_mm"]),
+            [], "open", selection="manual" if by_hand else "auto",
+            centroid=candidate.get("centroid"),
+            solidity=candidate.get("solidity"),
+            candidate_index=int(candidate["index"]),
+            **geom,
+        ))
+
+    # Two size classes on the same region is almost always a slip -- the second
+    # assignment was meant for a neighbour -- and it is invisible in the table,
+    # where both rows simply show the same area.
+    used: dict[int, list[int]] = {}
+    for row in measurements:
+        idx = row["raw"].get("candidate_index")
+        if idx is not None:
+            used.setdefault(idx, []).append(row["raw"]["size_class"])
+    for shared in (v for v in used.values() if len(v) > 1):
+        flags.append(
+            "Size classes " + ", ".join(str(c) for c in shared) +
+            " are all pointing at the same region. Each class should have its "
+            "own pore."
+        )
+
+    results = compute(measurements)
+    return {"measurements": results["rows"], "results": results, "flags": flags}
 
 
 def compute(measurements: list[dict[str, Any]]) -> dict[str, Any]:
@@ -166,25 +341,45 @@ def compute(measurements: list[dict[str, Any]]) -> dict[str, Any]:
 # ---------------------------------------------------------------- internals
 
 
-def _row(k: int, fd: float, at: float, pore: Pore | None,
+def _row(k: int, arista: float, at: float | None, pore: Pore | None,
          area: float | None, perim: float | None,
-         flags: list[str], status: str) -> dict[str, Any]:
-    centroid = pore.centroid if pore is not None else None
+         flags: list[str], status: str, *,
+         selection: str = "auto",
+         arista_mm: float | None = None,
+         filament_d_mm: float | None = None,
+         centroid: Any = None,
+         solidity: float | None = None,
+         candidate_index: int | None = None,
+         offset: tuple[int, int] = (0, 0)) -> dict[str, Any]:
+    # Centroids are stored in full-frame coordinates, never crop coordinates.
+    # The crop origin moves with the ROI and the padding width, so a centroid
+    # relative to it would mean something different after any parameter change,
+    # and a manually assigned pore (whose position is already known in the frame)
+    # could not be stored in the same field as an automatically detected one.
+    if pore is not None:
+        centroid = (pore.centroid[0] + offset[0], pore.centroid[1] + offset[1])
+        solidity = pore.solidity
     return {
         "index_no": k,
-        "label": f"{fd:g}x{fd:g} mm",
+        "label": f"a = {arista:g} mm",
         "included": status != "missing",
         "raw": {
             "size_class": k + 1,
-            "nominal_fd_mm": fd,
+            # Kept under the old key so a run saved before the arista change and
+            # one saved after still group together in the replicate summary.
+            "nominal_fd_mm": arista,
+            "arista_mm": arista if arista_mm is None else arista_mm,
+            "filament_d_mm": filament_d_mm,
             "at_mm2": at,
             "aa_mm2": area,
             "perimeter_mm": perim,
             "status": status,
-            "centroid": list(centroid) if centroid else None,
+            "selection": selection,
+            "centroid": list(centroid) if centroid is not None else None,
             "row": pore.row if pore else None,
             "col": pore.col if pore else None,
-            "solidity": pore.solidity if pore else None,
+            "solidity": solidity,
+            "candidate_index": candidate_index,
             "flags": flags,
         },
     }

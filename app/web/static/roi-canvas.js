@@ -14,6 +14,21 @@
 const HANDLE = 7;          // half-size of a grab handle, in screen px
 const MIN_SIZE = 20;       // smallest permitted ROI edge, in image px
 
+/** Ray casting: is the point inside the closed polygon? */
+function pointInPolygon(p, points) {
+  if (!points || points.length < 3) return false;
+  let inside = false;
+  for (let i = 0, j = points.length - 1; i < points.length; j = i++) {
+    const [xi, yi] = points[i];
+    const [xj, yj] = points[j];
+    if ((yi > p.y) !== (yj > p.y) &&
+        p.x < ((xj - xi) * (p.y - yi)) / (yj - yi) + xi) {
+      inside = !inside;
+    }
+  }
+  return inside;
+}
+
 export class RoiCanvas {
   constructor(canvas, opts = {}) {
     this.canvas = canvas;
@@ -33,7 +48,9 @@ export class RoiCanvas {
     this.onChange = opts.onChange || (() => {});
     this.onMarkClick = opts.onMarkClick || (() => {});
     this.onPick = opts.onPick || (() => {});
+    this.onAssign = opts.onAssign || (() => {});
     this.picking = null;          // key of the colour being sampled, or null
+    this.assigning = false;       // waiting for a click that picks a pore
     this.sampler = null;          // offscreen copy, for reading true pixel values
     this.scale = 1;
 
@@ -77,6 +94,17 @@ export class RoiCanvas {
   armPicker(key) {
     this.picking = key;
     this.canvas.classList.toggle("picking", !!key);
+  }
+
+  /**
+   * Wait for a click that chooses a pore.
+   *
+   * Stays armed until the caller disarms it, because assigning a whole sequence
+   * of size classes is several clicks in a row.
+   */
+  armAssign(on) {
+    this.assigning = !!on;
+    this.canvas.classList.toggle("picking", !!on);
   }
 
   sampleAt(x, y) {
@@ -143,10 +171,16 @@ export class RoiCanvas {
     window.addEventListener("mousemove", (e) => this._move(e));
     window.addEventListener("mouseup", () => this._up());
     window.addEventListener("keydown", (e) => {
-      if (e.key === "Escape" && this.drag) {
+      if (e.key !== "Escape") return;
+      if (this.drag) {
         this.roi = this.drag.original ? { ...this.drag.original } : this.roi;
         this.drag = null;
         this.draw();
+      } else if (this.assigning) {
+        this.armAssign(false);
+        this.onAssign({ cancelled: true });
+      } else if (this.picking) {
+        this.armPicker(null);
       }
     });
     window.addEventListener("resize", () => { this._resize(); this.draw(); });
@@ -163,6 +197,18 @@ export class RoiCanvas {
       const key = this.picking;
       this.armPicker(null);
       if (sample) this.onPick(key, sample);
+      return;
+    }
+
+    // Checked before the ROI-drag branch below. A click outside the ROI is a
+    // meaningful answer here -- it means "this size class is a closed pore" --
+    // and that gesture would otherwise start drawing a new ROI rectangle.
+    if (this.assigning) {
+      this.onAssign({
+        markId: this._hitMark(p),
+        inside: this._inside(p),
+        x: p.x, y: p.y,
+      });
       return;
     }
 
@@ -298,7 +344,9 @@ export class RoiCanvas {
 
   _hitMark(p) {
     const tol = 8 / this.scale;
-    for (const m of this.marks) {
+    // Smallest first, so a pore nested inside a larger region still wins.
+    const ordered = [...this.marks].sort((a, b) => (a.area || 0) - (b.area || 0));
+    for (const m of ordered) {
       if (m.kind === "tick") {
         if (Math.abs(p.x - m.x) <= tol &&
             p.y >= Math.min(m.y0, m.y1) - tol && p.y <= Math.max(m.y0, m.y1) + tol) {
@@ -306,6 +354,12 @@ export class RoiCanvas {
         }
       } else if (m.kind === "point") {
         if (Math.hypot(p.x - m.x, p.y - m.y) <= Math.max(tol, m.r || 0)) return m.id;
+      } else if (m.kind === "pore") {
+        // Anywhere on the pore counts, not just the centroid dot.
+        if (Math.hypot(p.x - m.x, p.y - m.y) <= Math.max(tol, 7 / this.scale)) {
+          return m.id;
+        }
+        if (pointInPolygon(p, m.points)) return m.id;
       }
     }
     return null;
@@ -427,9 +481,37 @@ export class RoiCanvas {
     const ctx = this.ctx;
     for (const m of this.marks) {
       const on = m.included !== false;
-      ctx.strokeStyle = on ? "#25e06a" : "#8a8a8a";
+      ctx.strokeStyle = m.color || (on ? "#25e06a" : "#8a8a8a");
       ctx.fillStyle = ctx.strokeStyle;
-      ctx.lineWidth = 2;
+      ctx.lineWidth = m.lineWidth || 2;
+      if (m.kind === "pore") {
+        // Contour in its own colour, centroid dot in another: the two are
+        // separate visual jobs, since the contour says where the region is and
+        // the dot is the thing small pores are actually clicked by.
+        ctx.beginPath();
+        m.points.forEach((p, i) => {
+          const c = this.toCanvas({ x: p[0], y: p[1] });
+          if (i === 0) ctx.moveTo(c.x, c.y); else ctx.lineTo(c.x, c.y);
+        });
+        ctx.closePath();
+        ctx.stroke();
+
+        const c = this.toCanvas({ x: m.x, y: m.y });
+        ctx.fillStyle = m.centroidColor || "#25e06a";
+        ctx.beginPath();
+        ctx.arc(c.x, c.y, 4, 0, Math.PI * 2);
+        ctx.fill();
+
+        if (m.label) {
+          ctx.fillStyle = m.labelColor || m.color || "#25e06a";
+          ctx.font = "bold 13px ui-monospace, monospace";
+          ctx.strokeStyle = "rgba(0,0,0,0.75)";
+          ctx.lineWidth = 3;
+          ctx.strokeText(m.label, c.x + 8, c.y - 6);
+          ctx.fillText(m.label, c.x + 8, c.y - 6);
+        }
+        continue;
+      }
       if (m.kind === "tick") {
         const a = this.toCanvas({ x: m.x, y: m.y0 });
         const b = this.toCanvas({ x: m.x, y: m.y1 });
@@ -457,7 +539,7 @@ export class RoiCanvas {
           x: m.x ?? m.points?.[0]?.[0] ?? 0,
           y: m.y ?? m.y0 ?? m.points?.[0]?.[1] ?? 0,
         });
-        ctx.fillStyle = on ? "#25e06a" : "#8a8a8a";
+        ctx.fillStyle = m.color || (on ? "#25e06a" : "#8a8a8a");
         ctx.font = "12px ui-monospace, monospace";
         ctx.fillText(m.label, c.x + 7, c.y - 5);
       }
