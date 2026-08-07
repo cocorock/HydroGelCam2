@@ -107,6 +107,20 @@ and value get a wide band, because shading across a curved filament or a matte
 ABS face moves both a long way while the hue barely shifts. Pale red ABS sits at
 H ≈ 0, so its window straddles the hue wrap and is applied as two ranges.
 
+### Scale bar
+
+Once a calibration is selected, a scale bar is drawn in the bottom-right corner
+of the captured image showing **20 mm, 10 mm and 5 mm** as three nested bars,
+each divided into 1 mm cells so it reads as a ruler rather than a line of a
+stated length. Because it is drawn on the canvas, it lands in the saved overlay
+automatically and is therefore in whatever you export from tab 5.
+
+A length that would take more than about half the frame is dropped — a 20 mm bar
+across a 19.5 mm field cannot be drawn honestly — so a close-up shows 10 and
+5 mm, and a very small field falls back to sub-millimetre steps rather than
+showing nothing. A homography profile is labelled *approx.*, since there the
+scale varies across the frame and one bar can only be representative.
+
 ### What gets stored
 
 Each saved run keeps **two images**: the original capture, and the annotated

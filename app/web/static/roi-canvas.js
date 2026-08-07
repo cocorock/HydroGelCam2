@@ -51,6 +51,7 @@ export class RoiCanvas {
     this.onAssign = opts.onAssign || (() => {});
     this.picking = null;          // key of the colour being sampled, or null
     this.assigning = false;       // waiting for a click that picks a pore
+    this.scaleBar = null;         // {mmPerPx, approximate} or null
     this.sampler = null;          // offscreen copy, for reading true pixel values
     this.scale = 1;
 
@@ -125,6 +126,17 @@ export class RoiCanvas {
 
   setMarks(marks) {
     this.marks = marks || [];
+    this.draw();
+  }
+
+  /**
+   * Show a scale bar from the selected calibration, or nothing without one.
+   *
+   * `approximate` is set for a homography profile: there the scale varies across
+   * the frame, so a single bar is only representative and says so.
+   */
+  setScaleBar(spec) {
+    this.scaleBar = (spec && spec.mmPerPx > 0) ? spec : null;
     this.draw();
   }
 
@@ -413,6 +425,7 @@ export class RoiCanvas {
       this._drawRect();
     }
     this._drawMarks();
+    this._drawScaleBar();
   }
 
   _drawRect() {
@@ -475,6 +488,92 @@ export class RoiCanvas {
       ctx.fillText(String(i + 1), c.x + 7, c.y - 7);
       ctx.fillStyle = "#ff2d2d";
     });
+  }
+
+  /**
+   * A 20 / 10 / 5 mm scale bar in the bottom-right corner.
+   *
+   * Three nested bars sharing a left edge rather than one subdivided bar, so
+   * each length can be read straight off without counting ticks. Drawn last, on
+   * top of everything, and sized in canvas pixels from the calibration — which
+   * means it comes out correct both on screen and in the full-resolution overlay
+   * export, where the canvas is the image's own size.
+   *
+   * Lengths that would take more than `MAX_FRACTION` of the frame are dropped;
+   * a 20 mm bar across a 15 mm field would otherwise run off the image. If none
+   * of the three fit, smaller decades are tried so there is always some scale.
+   */
+  _drawScaleBar() {
+    const bar = this.scaleBar;
+    if (!bar || !this.image) return;
+
+    const MAX_FRACTION = 0.55;
+    const pxPerMm = 1 / bar.mmPerPx;
+    const canvasPxPerMm = pxPerMm * this.scale;
+    const limit = this.canvas.width * MAX_FRACTION;
+
+    let lengths = [20, 10, 5].filter((mm) => mm * canvasPxPerMm <= limit);
+    if (!lengths.length) {
+      lengths = [2, 1, 0.5, 0.2, 0.1]
+        .filter((mm) => mm * canvasPxPerMm <= limit).slice(0, 3);
+    }
+    if (!lengths.length) return;
+
+    const ctx = this.ctx;
+    // Scale the furniture with the canvas so the exported overlay is not a
+    // hairline drawing on a 1500 px image.
+    const font = Math.max(10, Math.round(this.canvas.width / 68));
+    const barH = Math.max(4, Math.round(font * 0.5));
+    const gap = Math.round(font * 0.45);
+    const pad = Math.round(font * 0.7);
+
+    const longest = Math.max(...lengths) * canvasPxPerMm;
+    ctx.save();
+    ctx.font = `600 ${font}px ui-monospace, monospace`;
+    ctx.textBaseline = "middle";
+    const labelW = Math.max(...lengths.map((mm) => ctx.measureText(`${mm} mm`).width));
+
+    const boxW = longest + labelW + pad * 3;
+    const boxH = lengths.length * (barH + gap) + gap + (bar.approximate ? font + 2 : 0);
+    const boxX = this.canvas.width - boxW - pad;
+    const boxY = this.canvas.height - boxH - pad;
+
+    ctx.fillStyle = "rgba(12,14,18,0.72)";
+    ctx.strokeStyle = "rgba(255,255,255,0.28)";
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.rect(boxX, boxY, boxW, boxH);
+    ctx.fill();
+    ctx.stroke();
+
+    const left = boxX + pad;
+    lengths.forEach((mm, i) => {
+      const w = mm * canvasPxPerMm;
+      const y = boxY + gap + i * (barH + gap);
+
+      // Alternating 1 mm cells, so the bar is readable as a ruler rather than
+      // just a line of a stated length.
+      const cells = Math.max(1, Math.round(mm));
+      const cellW = w / cells;
+      for (let c = 0; c < cells; c++) {
+        ctx.fillStyle = c % 2 ? "#0c0e12" : "#ffffff";
+        ctx.fillRect(left + c * cellW, y, cellW, barH);
+      }
+      ctx.strokeStyle = "#ffffff";
+      ctx.lineWidth = 1;
+      ctx.strokeRect(left + 0.5, y + 0.5, w - 1, barH - 1);
+
+      ctx.fillStyle = "#ffffff";
+      ctx.fillText(`${mm} mm`, left + longest + pad, y + barH / 2);
+    });
+
+    if (bar.approximate) {
+      ctx.fillStyle = "#ffb547";
+      ctx.font = `${Math.max(9, font - 2)}px ui-monospace, monospace`;
+      ctx.fillText("approx. (homography)", left,
+                   boxY + boxH - (font + 2) / 2 - gap / 2);
+    }
+    ctx.restore();
   }
 
   _drawMarks() {

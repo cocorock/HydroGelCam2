@@ -780,10 +780,28 @@ class TestTab {
     this.showCalibHint();
   }
 
+  /** The calibration profile currently selected, or null. */
+  calibration() {
+    const id = this.q('[data-role="calibration"]').value;
+    return this.calibrations.find((x) => String(x.id) === String(id)) || null;
+  }
+
+  /** Push the selected scale onto the canvas so it draws its bar. */
+  applyScaleBar() {
+    const c = this.calibration();
+    this.canvas?.setScaleBar(c && c.mm_per_px_x ? {
+      mmPerPx: c.mm_per_px_x,
+      // In homography mode the scale varies across the frame, so a single bar
+      // is representative rather than exact.
+      approximate: c.mode === "homography",
+    } : null);
+  }
+
   showCalibHint() {
     const id = this.q('[data-role="calibration"]').value;
     const c = this.calibrations.find((x) => String(x.id) === String(id));
     const hint = this.q('[data-role="calib-hint"]');
+    this.applyScaleBar();
     if (!c) {
       hint.textContent =
         "Without a calibration every length is in pixels, so mm results will be wrong.";
@@ -945,6 +963,7 @@ class TestTab {
       });
     }
     await this.canvas.setImage(r.url, this.roi);
+    this.applyScaleBar();
     status("Frame captured. Drag corner to corner on the image to set the ROI.");
   }
 
