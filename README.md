@@ -47,7 +47,44 @@ formula that produced them.
 The **Disconnect & shut down** button at the top right releases the camera and
 stops the server. Saved runs are kept; anything captured but not saved is lost.
 
+### Camera
+
+The resolution dropdown is populated before you even connect, defaulting to
+1920×1080. That default is applied the moment you press Connect — previously
+nothing was requested at all on the first connect, so the device fell back to
+whatever low-bandwidth mode its own driver prefers, commonly 1280×720 regardless
+of what the dropdown showed. Changing the dropdown while already connected now
+reconnects with the new mode immediately rather than only taking effect on the
+next Connect. The device still negotiates to the nearest resolution it actually
+supports; the real result is always shown in the status line. **Detect exact
+modes** runs a one-time validated sweep of every resolution the connected device
+supports, replacing the generic list with the confirmed one — this is no longer
+run automatically on every connect, since on most DirectShow drivers each mode
+change briefly restarts the video stream, and sweeping nine of them was the
+single largest cost in how long a connect took.
+
+Each slider's range is discovered from the device itself rather than guessed. A
+generic UVC brightness span, say, might be −64…64, but a specific camera's real
+range could be 0…255 or something else entirely; asking the driver to clamp a
+deliberately absurd value and reading back where it landed reveals the true
+bound directly; no guessed range means the sliders now use their full real
+travel, not a hard-coded approximation.
+
 ### Region of interest
+
+Once a camera is connected, the capture frame in tabs 2–4 shows the **live
+feed**, not a placeholder — press **Capture** to freeze it, exactly like
+pressing a shutter. Leaving a tab stops its stream request so a hidden panel is
+not still pulling frames in the background; returning to a tab with no staged
+image resumes it.
+
+**Zoom to ROI** crops to the current region and scales it up to fill the same
+frame, aspect ratio preserved (fit, not fill — letterboxed on whichever axis
+doesn't match, never stretched). It is a display transform only: Calculate and
+Save keep using the original image, and the ROI can still be dragged, resized,
+or redrawn while zoomed — the same gesture as at full view, just magnified.
+Toggling it off returns to the full frame; loading a new image always starts
+un-zoomed.
 
 Dragging corner to corner always starts a **new** rectangle, matching
 `cv2.selectROI`. Corner and edge handles resize it, and **Shift**-drag moves it

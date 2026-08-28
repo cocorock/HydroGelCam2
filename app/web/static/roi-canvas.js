@@ -54,6 +54,10 @@ export class RoiCanvas {
     this.scaleBar = null;         // {mmPerPx, approximate} or null
     this.sampler = null;          // offscreen copy, for reading true pixel values
     this.scale = 1;
+    // {cropX, cropY, cropW, cropH, factor, offsetX, offsetY} while "Zoom to
+    // ROI" is active, else null. A pure display transform -- the working image
+    // and the ROI's own coordinates are never touched by it.
+    this.zoom = null;
 
     this.drag = null;
     this._bind();
@@ -76,6 +80,7 @@ export class RoiCanvas {
     this.roi = roi ? { ...roi } : { ...this.defaultRoi };
     this.quad = [];
     this.marks = [];
+    this.zoom = null;             // a new image always starts at full view
 
     // An unscaled offscreen copy, so a colour sample reads the image's real
     // pixel rather than whatever the on-screen canvas resampled it to.
@@ -121,6 +126,7 @@ export class RoiCanvas {
     this.roi = null;
     this.marks = [];
     this.quad = [];
+    this.zoom = null;
     this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
   }
 
@@ -154,25 +160,91 @@ export class RoiCanvas {
     this.draw();
   }
 
+  /**
+   * Toggle "Zoom to ROI": crop to the current ROI and scale it to fill this
+   * same canvas, aspect ratio preserved (contain, not cover -- letterboxed on
+   * whichever axis does not match, never stretched).
+   *
+   * A pure display transform. The ROI stays pinned to whatever it was when the
+   * button was pressed, so refining it afterwards works the same way it does
+   * at full view -- drag a handle, draw a new rectangle -- all while looking at
+   * the magnified image; toggling again snaps back to the full frame. Calling
+   * this a second time exits zoom rather than re-snapping, so a second click
+   * always means "done looking closely," not "zoom in again on whatever the
+   * ROI has become."
+   */
+  toggleZoom() {
+    if (this.zoom) {
+      this.zoom = null;
+      this.draw();
+      return;
+    }
+    if (!this.roi || this.roi.w < 1 || this.roi.h < 1) return;
+    this.zoom = { cropX: this.roi.x, cropY: this.roi.y,
+                 cropW: this.roi.w, cropH: this.roi.h };
+    this._recomputeZoom();
+    this.draw();
+  }
+
+  /** Refresh the zoom's fit-to-canvas factor and letterbox offsets against the
+   * current canvas size, without moving the pinned crop window itself. Needed
+   * after a resize, since the canvas the zoom fits into just changed size. */
+  _recomputeZoom() {
+    if (!this.zoom) return;
+    const { cropX, cropY, cropW, cropH } = this.zoom;
+    const factor = Math.min(this.canvas.width / cropW, this.canvas.height / cropH);
+    this.zoom = {
+      cropX, cropY, cropW, cropH, factor,
+      offsetX: (this.canvas.width - cropW * factor) / 2,
+      offsetY: (this.canvas.height - cropH * factor) / 2,
+    };
+  }
+
   _resize() {
     if (!this.image) return;
+    // Canvas dimensions always track the FULL image's own aspect ratio -- this
+    // is "the original capture frame" that a zoomed view fits into, and it must
+    // stay fixed regardless of what is currently drawn inside it.
     const width = this.canvas.parentElement.clientWidth;
     this.scale = width / this.image.width;
     this.canvas.width = width;
     this.canvas.height = Math.round(this.image.height * this.scale);
+    this._recomputeZoom();
   }
 
   /* ------------------------------------------------------ coordinates */
 
+  /** Canvas px per image px at the current view -- the zoom factor while
+   * zoomed, the plain fit-to-container scale otherwise. Everything sized in
+   * canvas pixels from image-space content (hit tolerances, the scale bar)
+   * goes through this rather than `this.scale` directly, so it stays correct
+   * whichever view is active. */
+  _viewScale() {
+    return this.zoom ? this.zoom.factor : this.scale;
+  }
+
   toImage(ev) {
     const rect = this.canvas.getBoundingClientRect();
-    return {
-      x: (ev.clientX - rect.left) / this.scale * (this.canvas.width / rect.width),
-      y: (ev.clientY - rect.top) / this.scale * (this.canvas.height / rect.height),
-    };
+    // CSS-pixel offset within the element, converted to canvas backing-store
+    // pixels (the two differ when the element is styled to a different size
+    // than its width/height attributes, e.g. on a high-DPI display).
+    const cx = (ev.clientX - rect.left) * (this.canvas.width / rect.width);
+    const cy = (ev.clientY - rect.top) * (this.canvas.height / rect.height);
+
+    if (this.zoom) {
+      const z = this.zoom;
+      return { x: z.cropX + (cx - z.offsetX) / z.factor,
+               y: z.cropY + (cy - z.offsetY) / z.factor };
+    }
+    return { x: cx / this.scale, y: cy / this.scale };
   }
 
   toCanvas(p) {
+    if (this.zoom) {
+      const z = this.zoom;
+      return { x: z.offsetX + (p.x - z.cropX) * z.factor,
+               y: z.offsetY + (p.y - z.cropY) * z.factor };
+    }
     return { x: p.x * this.scale, y: p.y * this.scale };
   }
 
@@ -347,7 +419,7 @@ export class RoiCanvas {
   }
 
   _hitHandle(p) {
-    const tol = HANDLE / this.scale;
+    const tol = HANDLE / this._viewScale();
     for (const [name, [hx, hy]] of Object.entries(this._handlePoints())) {
       if (Math.abs(p.x - hx) <= tol && Math.abs(p.y - hy) <= tol) return name;
     }
@@ -355,7 +427,7 @@ export class RoiCanvas {
   }
 
   _hitMark(p) {
-    const tol = 8 / this.scale;
+    const tol = 8 / this._viewScale();
     // Smallest first, so a pore nested inside a larger region still wins.
     const ordered = [...this.marks].sort((a, b) => (a.area || 0) - (b.area || 0));
     for (const m of ordered) {
@@ -368,7 +440,7 @@ export class RoiCanvas {
         if (Math.hypot(p.x - m.x, p.y - m.y) <= Math.max(tol, m.r || 0)) return m.id;
       } else if (m.kind === "pore") {
         // Anywhere on the pore counts, not just the centroid dot.
-        if (Math.hypot(p.x - m.x, p.y - m.y) <= Math.max(tol, 7 / this.scale)) {
+        if (Math.hypot(p.x - m.x, p.y - m.y) <= Math.max(tol, 7 / this._viewScale())) {
           return m.id;
         }
         if (pointInPolygon(p, m.points)) return m.id;
@@ -400,15 +472,20 @@ export class RoiCanvas {
     const savedCanvas = this.canvas;
     const savedCtx = this.ctx;
     const savedScale = this.scale;
+    const savedZoom = this.zoom;
     try {
       this.canvas = target;
       this.ctx = target.getContext("2d");
       this.scale = 1;
+      // The saved overlay is an archival record and must always show the whole
+      // frame -- an ephemeral on-screen "Zoom to ROI" view has no bearing on it.
+      this.zoom = null;
       this.draw();
     } finally {
       this.canvas = savedCanvas;
       this.ctx = savedCtx;
       this.scale = savedScale;
+      this.zoom = savedZoom;
     }
     return target;
   }
@@ -417,7 +494,19 @@ export class RoiCanvas {
     const ctx = this.ctx;
     if (!this.image) return;
     ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
-    ctx.drawImage(this.image, 0, 0, this.canvas.width, this.canvas.height);
+
+    if (this.zoom) {
+      // Letterbox bars (wherever the crop's aspect ratio does not match the
+      // canvas's) get the viewer's own background rather than staying
+      // transparent, so they read as intentional, not broken.
+      ctx.fillStyle = "#0d0f12";
+      ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
+      const z = this.zoom;
+      ctx.drawImage(this.image, z.cropX, z.cropY, z.cropW, z.cropH,
+                    z.offsetX, z.offsetY, z.cropW * z.factor, z.cropH * z.factor);
+    } else {
+      ctx.drawImage(this.image, 0, 0, this.canvas.width, this.canvas.height);
+    }
 
     if (this.mode === "quad") {
       this._drawQuad();
@@ -432,7 +521,8 @@ export class RoiCanvas {
     const ctx = this.ctx;
     const r = this.roi;
     const a = this.toCanvas({ x: r.x, y: r.y });
-    const w = r.w * this.scale, h = r.h * this.scale;
+    const scale = this._viewScale();
+    const w = r.w * scale, h = r.h * scale;
 
     // Dim everything outside the ROI so the working area reads clearly.
     ctx.save();
@@ -509,7 +599,7 @@ export class RoiCanvas {
 
     const MAX_FRACTION = 0.55;
     const pxPerMm = 1 / bar.mmPerPx;
-    const canvasPxPerMm = pxPerMm * this.scale;
+    const canvasPxPerMm = pxPerMm * this._viewScale();
     const limit = this.canvas.width * MAX_FRACTION;
 
     let lengths = [20, 10, 5].filter((mm) => mm * canvasPxPerMm <= limit);

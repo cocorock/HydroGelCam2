@@ -91,7 +91,7 @@ main { padding: 18px 20px 60px; max-width: 1500px; }
   border: 1px solid var(--line); vertical-align: middle;
 }
 .picker-row { display: grid; grid-template-columns: 1fr auto auto; gap: 8px; align-items: center; margin-bottom: 7px; }
-.picker-row button.armed { border-color: var(--good); color: var(--good); }
+button.armed { border-color: var(--good); color: var(--good); }
 canvas.picking { cursor: crosshair; }
 
 button.shutdown { border-color: var(--bad); color: var(--bad); font-size: 12px; padding: 4px 10px; }

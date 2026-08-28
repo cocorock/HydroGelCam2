@@ -50,6 +50,15 @@ class CameraSession:
         height: int | None = None,
         name: str | None = None,
     ) -> dict[str, Any]:
+        # A resolution not requested at all is a resolution the driver picks for
+        # itself, and that default is very often a low-bandwidth mode like
+        # 1280x720 rather than the sensor's native resolution. Asking for the
+        # configured preferred size up front is what makes a fresh connect land
+        # on it; the device still negotiates to the nearest mode it actually
+        # supports, and the true result is read back into `status()` below.
+        width = width or config.DEFAULT_WIDTH
+        height = height or config.DEFAULT_HEIGHT
+
         with self._lock:
             self._close_locked()
 
@@ -63,16 +72,20 @@ class CameraSession:
                 raise RuntimeError(self.last_error)
 
             cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-            if width and height:
-                cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
-                cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
+            cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
+            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
 
             self._cap = cap
             self.device_index = index
             self.device_name = name
             self.backend = backend
             self.last_error = None
-            self.modes = devices.supported_modes(cap)
+            # Not a full sweep of every candidate resolution here -- on many
+            # DirectShow drivers each mode change briefly restarts the video
+            # stream, and sweeping nine of them was the single biggest cost in
+            # how long a connect took. `detect_modes()` runs that sweep, but only
+            # when explicitly asked for.
+            self.modes = []
             self.capabilities = controls.probe(cap)
 
             self._stop.clear()
@@ -83,6 +96,33 @@ class CameraSession:
 
         self._wait_for_frame(timeout=3.0)
         return self.status()
+
+    def detect_modes(self) -> list[dict]:
+        """On-demand full sweep of every candidate resolution.
+
+        Deliberately not run on every connect -- see `open()`. The sweep needs
+        exclusive use of the capture handle while it cycles modes, so the grab
+        thread is paused and restarted around it rather than left reading
+        concurrently, which OpenCV's DirectShow backend does not guarantee is
+        safe from two threads at once.
+        """
+        with self._lock:
+            cap = self._cap
+            if cap is None:
+                raise RuntimeError("No camera is open.")
+
+            self._stop.set()
+            if self._thread is not None and self._thread.is_alive():
+                self._thread.join(timeout=2.0)
+            try:
+                self.modes = devices.supported_modes(cap)
+            finally:
+                self._stop.clear()
+                self._thread = threading.Thread(
+                    target=self._grab_loop, name="camera-grab", daemon=True
+                )
+                self._thread.start()
+            return self.modes
 
     def close(self) -> None:
         with self._lock:
@@ -132,7 +172,7 @@ class CameraSession:
             with self._frame_lock:
                 if self._frame is not None:
                     return
-            time.sleep(0.05)
+            time.sleep(0.02)
 
     def latest_frame(self) -> np.ndarray | None:
         with self._frame_lock:

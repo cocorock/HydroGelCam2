@@ -52,6 +52,11 @@
           <button id="cam-open" class="primary">Connect</button>
           <button id="cam-close">Disconnect</button>
         </div>
+        <div class="hint">Requested on Connect (or applied immediately if
+          already connected) &mdash; the device may negotiate a nearby mode
+          instead, and the actual result is always shown below.
+          <button id="cam-detect-modes" style="font-size:11px;margin-top:4px">Detect exact modes (needs a connection)</button>
+        </div>
         <div class="hint" id="cam-status">Not connected.</div>
       </div>
 
@@ -286,6 +291,7 @@
           <button data-act="capture" class="primary">Capture</button>
           <button data-act="retake">Retake</button>
           <button data-act="reset-roi">Reset ROI</button>
+          <button data-act="zoom-roi" title="Crop to the ROI and scale it up to fill this frame, aspect ratio preserved. A view only &mdash; Calculate and Save still use the original image.">Zoom to ROI</button>
           <label class="inline" style="flex:0 0 auto">
             <input type="file" accept="image/*" data-act="upload" style="width:auto">
           </label>

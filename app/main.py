@@ -117,6 +117,8 @@ def index(request: Request):
             "cf_convention": config.CF_CONVENTION,
             "cf_convention_labels": config.CF_CONVENTION_LABELS,
             "pr_window": [config.PR_ACCEPT_LOW, config.PR_ACCEPT_HIGH],
+            "camera_default_width": config.DEFAULT_WIDTH,
+            "camera_default_height": config.DEFAULT_HEIGHT,
             "roi_padding_px": config.ROI_PADDING_PX,
             "final_kernel": config.FINAL_MORPH_KERNEL,
             "hsv_defaults": config.HSV_DEFAULTS,
@@ -176,6 +178,27 @@ def camera_stream():
         stream.session.mjpeg(),
         media_type="multipart/x-mixed-replace; boundary=frame",
     )
+
+
+@app.get("/api/camera/candidate-modes")
+def camera_candidate_modes():
+    """A fixed, unvalidated list of common resolutions.
+
+    Lets the resolution picker be filled in before any camera is connected --
+    the validated list only exists once a device is open and `detect-modes` has
+    been run against it.
+    """
+    return {"modes": [{"width": w, "height": h}
+                      for w, h in devices.CANDIDATE_MODES]}
+
+
+@app.post("/api/camera/detect-modes")
+def camera_detect_modes():
+    """On-demand sweep of exactly which resolutions the connected device supports."""
+    try:
+        return {"modes": stream.session.detect_modes()}
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
 
 
 @app.post("/api/camera/props")

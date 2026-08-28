@@ -92,35 +92,104 @@ def apply(cap: cv2.VideoCapture, values: dict[str, Any]) -> dict[str, float]:
 
 
 def probe(cap: cv2.VideoCapture) -> dict[str, dict[str, Any]]:
-    """Write-then-read each property to find out which ones the device honours.
+    """Find out which properties the device honours, and their real range.
 
-    A property is considered supported when the device either reports a
-    plausible current value or accepts a nudged value. The original value is
-    always restored.
+    Range ("slider") properties get their true min/max discovered directly, not
+    just a supported/unsupported flag -- see `_probe_range`. Toggle properties
+    have a fixed two-value domain, so they keep the simpler nudge-and-check.
     """
     caps: dict[str, dict[str, Any]] = {}
     for spec in PROPS:
-        original = cap.get(spec.cv_id)
+        caps[spec.key] = (_probe_toggle(cap, spec) if spec.kind == "toggle"
+                          else _probe_range(cap, spec))
+    return caps
+
+
+def _probe_toggle(cap: cv2.VideoCapture, spec: PropSpec) -> dict[str, Any]:
+    """Write-then-read: does a nudge to the spec's own hi/lo actually move it?
+
+    A device that does not implement a property typically returns 0 or -1 for
+    every read; nudging it and checking whether the read follows is how support
+    is inferred. The original value is always restored.
+    """
+    original = cap.get(spec.cv_id)
+    supported = False
+
+    probe_value = spec.hi if original <= (spec.lo + spec.hi) / 2 else spec.lo
+    try:
+        cap.set(spec.cv_id, float(probe_value))
+        after = cap.get(spec.cv_id)
+        supported = abs(after - original) > 1e-6 or _plausible(spec, original)
+        cap.set(spec.cv_id, float(original))
+    except (TypeError, ValueError, cv2.error):
         supported = False
 
-        # A device that does not implement a property typically returns 0 or -1
-        # for every read. Nudge it and see whether the read follows.
-        probe_value = spec.hi if original <= (spec.lo + spec.hi) / 2 else spec.lo
+    return {
+        **asdict(spec),
+        "supported": bool(supported),
+        "value": float(cap.get(spec.cv_id)),
+        "pairs_with": AUTO_PAIRS.get(spec.key),
+    }
+
+
+# Clamp probes set well outside any plausible UVC value, so the driver's own
+# Set() clamp reveals the true bound instead of us guessing one. DirectShow's
+# IAMVideoProcAmp/IAMCameraControl always clamp a Set() to GetRange()'s bounds,
+# and OpenCV passes the clamped value straight through on the following Get() --
+# OpenCV has no direct range-query API, so this is the reliable way to learn a
+# specific device's actual span (which can be -64..64, 0..255, or something
+# else entirely) instead of rendering a slider against a generic guess that
+# either clips off part of the real range or accepts values the device ignores.
+_CLAMP_LOW = -1_000_000.0
+_CLAMP_HIGH = 1_000_000.0
+# A "discovered" bound further from zero than this means the driver did not
+# actually clamp (e.g. it silently ignored the out-of-range Set and the read
+# reflects something else), so the result is discarded in favour of the guess.
+_SANE_BOUND = 100_000.0
+
+
+def _probe_range(cap: cv2.VideoCapture, spec: PropSpec) -> dict[str, Any]:
+    """Discover a slider property's true min/max via the Set-and-clamp trick.
+
+    The original value is always restored, even if a Set/Get call raises
+    partway through. A partial result -- the low probe succeeding and the high
+    one raising, or vice versa -- is discarded rather than trusted: pairing a
+    freshly discovered bound with whatever `discovered_hi`/`discovered_lo`
+    happened to hold before the failure can look like a perfectly plausible
+    (but wrong) range, so both probes have to complete before either is used.
+    """
+    original = cap.get(spec.cv_id)
+    discovered_lo = discovered_hi = None
+    probed_ok = False
+
+    try:
+        cap.set(spec.cv_id, _CLAMP_LOW)
+        discovered_lo = cap.get(spec.cv_id)
+        cap.set(spec.cv_id, _CLAMP_HIGH)
+        discovered_hi = cap.get(spec.cv_id)
+        probed_ok = True
+    except (TypeError, ValueError, cv2.error):
+        probed_ok = False
+    finally:
         try:
-            cap.set(spec.cv_id, float(probe_value))
-            after = cap.get(spec.cv_id)
-            supported = abs(after - original) > 1e-6 or _plausible(spec, original)
             cap.set(spec.cv_id, float(original))
         except (TypeError, ValueError, cv2.error):
-            supported = False
+            pass
 
-        caps[spec.key] = {
-            **asdict(spec),
-            "supported": bool(supported),
-            "value": float(cap.get(spec.cv_id)),
-            "pairs_with": AUTO_PAIRS.get(spec.key),
-        }
-    return caps
+    lo, hi, supported = spec.lo, spec.hi, False
+    if (probed_ok
+            and discovered_hi > discovered_lo
+            and abs(discovered_lo) < _SANE_BOUND
+            and abs(discovered_hi) < _SANE_BOUND):
+        lo, hi, supported = discovered_lo, discovered_hi, True
+
+    return {
+        **asdict(spec),
+        "lo": lo, "hi": hi,
+        "supported": bool(supported),
+        "value": float(cap.get(spec.cv_id)),
+        "pairs_with": AUTO_PAIRS.get(spec.key),
+    }
 
 
 def _plausible(spec: PropSpec, value: float) -> bool:

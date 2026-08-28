@@ -110,6 +110,12 @@ const rgbCss = ({ r, g, b }) => `rgb(${r},${g},${b})`;
 
 $$("nav.tabs button").forEach((btn) => {
   btn.addEventListener("click", () => {
+    // A live feed only makes sense on the tab actually on screen; leaving a
+    // test tab stops its stream request so a hidden panel is not still pulling
+    // MJPEG frames from the server in the background.
+    const previousTab = $$("nav.tabs button.active")[0]?.dataset.tab;
+    Tests[previousTab]?.stopLiveFeed();
+
     $$("nav.tabs button").forEach((b) => b.classList.toggle("active", b === btn));
     $$(".panel").forEach((p) =>
       p.classList.toggle("active", p.id === `panel-${btn.dataset.tab}`));
@@ -122,15 +128,49 @@ $$("nav.tabs button").forEach((btn) => {
 
 const Camera = {
   capabilities: {},
+  isOpen: false,
 
   async init() {
     $("#cam-refresh").onclick = () => this.scan();
     $("#cam-open").onclick = () => this.open();
     $("#cam-close").onclick = () => this.close();
     $("#cam-profile-save").onclick = () => this.saveProfile();
+    $("#cam-detect-modes").onclick = () => this.detectModes();
+    // Applies immediately if already connected, rather than only taking effect
+    // on the next Connect -- picking 1920x1080 from the list should not need a
+    // disconnect/reconnect round trip to actually happen.
+    $("#cam-mode").onchange = () => { if (this.isOpen) this.open(); };
     await this.scan();
+    await this.loadCandidateModes();
     await this.loadProfiles();
     await this.refreshStatus();
+  },
+
+  async loadCandidateModes() {
+    const { modes } = await api("/api/camera/candidate-modes");
+    const sel = $("#cam-mode");
+    sel.replaceChildren(...modes.map((m) =>
+      el("option", { value: JSON.stringify(m) }, `${m.width} × ${m.height}`)));
+    // Default to the configured preferred resolution (1920x1080 out of the
+    // box) instead of leaving the selection empty -- an empty selection is what
+    // used to make Connect ask for no particular mode at all, so the device
+    // fell back to whatever low-bandwidth default its driver prefers.
+    const want = `${D.camera_default_width}x${D.camera_default_height}`;
+    const match = modes.find((m) => `${m.width}x${m.height}` === want);
+    if (match) sel.value = JSON.stringify(match);
+  },
+
+  async detectModes() {
+    try {
+      status("Detecting exact resolutions…");
+      const { modes } = await post("/api/camera/detect-modes");
+      const sel = $("#cam-mode");
+      const current = sel.value;
+      sel.replaceChildren(...modes.map((m) =>
+        el("option", { value: JSON.stringify(m) }, `${m.width} × ${m.height}`)));
+      if ([...sel.options].some((o) => o.value === current)) sel.value = current;
+      status(`Found ${modes.length} resolution(s) this device actually supports.`, "good");
+    } catch (e) { status(e.message, "bad"); }
   },
 
   async scan() {
@@ -169,13 +209,18 @@ const Camera = {
   },
 
   applyStatus(st) {
+    this.isOpen = !!st.open;
     const viewer = $("#cam-viewer");
     if (st.open) {
       viewer.replaceChildren(
         el("img", { src: `/api/camera/stream?t=${Date.now()}`, alt: "Live camera" }));
       $("#cam-status").textContent =
         `Connected: ${st.device_name || st.device_index} via ${st.backend} — ${st.width}×${st.height}`;
-      if (st.modes?.length && !$("#cam-mode").options.length) {
+      // A plain connect no longer runs the validation sweep (see stream.py), so
+      // st.modes is normally empty here and the candidate list picked before
+      // connecting is left alone; this only replaces it once detect-modes has
+      // actually populated something.
+      if (st.modes?.length) {
         $("#cam-mode").replaceChildren(...st.modes.map((m) =>
           el("option", { value: JSON.stringify(m) }, `${m.width} × ${m.height}`)));
       }
@@ -186,6 +231,7 @@ const Camera = {
     }
     this.capabilities = st.capabilities || {};
     this.renderControls();
+    refreshActiveTestTab();
   },
 
   renderControls() {
@@ -462,6 +508,7 @@ class TestTab {
     act("capture").onclick = () => this.capture();
     act("retake").onclick = () => this.retake();
     act("reset-roi").onclick = () => this.canvas?.resetRoi();
+    act("zoom-roi").onclick = () => this.toggleZoom();
     act("analyze").onclick = () => this.analyze();
     act("redetect").onclick = () => this.analyze();
     act("save").onclick = () => this.save();
@@ -617,6 +664,7 @@ class TestTab {
     // that are still showing the factory values.
     this.defaultsPromise ||= this.loadDefaults();
     await this.defaultsPromise;
+    this.refreshCaptureViewer();
   }
 
   /* --------------------------------------------------- stored defaults */
@@ -912,6 +960,46 @@ class TestTab {
 
   /* -------------------------------------------------------- capture */
 
+  /**
+   * Show whatever the capture viewer should currently display: a staged still
+   * is left alone, otherwise a live feed if the camera is connected, otherwise
+   * the idle placeholder. The single place that decides this, so onShow,
+   * retake and a camera connect/disconnect all stay in sync without duplicating
+   * the logic.
+   */
+  refreshCaptureViewer() {
+    if (this.imageId) return;
+    const viewer = this.q('[data-role="viewer"]');
+    if (Camera.isOpen) {
+      let img = viewer.querySelector('img[data-role="live-feed"]');
+      if (!img) {
+        img = el("img", { "data-role": "live-feed", alt: "Live camera feed" });
+        viewer.replaceChildren(img);
+      }
+      img.src = `/api/camera/stream?t=${Date.now()}`;
+    } else {
+      viewer.replaceChildren(el("div", { class: "placeholder" },
+        "Capture a frame, or load an image file, to begin."));
+    }
+  }
+
+  /** Stop this tab's live-feed request without otherwise touching the DOM --
+   * used when the tab is no longer the one on screen. */
+  stopLiveFeed() {
+    const img = this.q('[data-role="viewer"] img[data-role="live-feed"]');
+    if (img) img.src = "";
+  }
+
+  toggleZoom() {
+    if (!this.canvas) return;
+    this.canvas.toggleZoom();
+    const btn = this.q('[data-act="zoom-roi"]');
+    if (btn) {
+      btn.textContent = this.canvas.zoom ? "Show full image" : "Zoom to ROI";
+      btn.classList.toggle("armed", !!this.canvas.zoom);
+    }
+  }
+
   async capture() {
     try {
       const r = await post("/api/camera/capture");
@@ -964,6 +1052,10 @@ class TestTab {
     }
     await this.canvas.setImage(r.url, this.roi);
     this.applyScaleBar();
+    // A fresh image always starts at full view, matching RoiCanvas resetting
+    // its own zoom state in setImage().
+    const zoomBtn = this.q('[data-act="zoom-roi"]');
+    if (zoomBtn) { zoomBtn.textContent = "Zoom to ROI"; zoomBtn.classList.remove("armed"); }
     status("Frame captured. Drag corner to corner on the image to set the ROI.");
   }
 
@@ -977,9 +1069,11 @@ class TestTab {
     this.manualClasses = null;
     this.assignMode = null;
     this.canvas = null;
-    this.q('[data-role="viewer"]').replaceChildren(
-      el("div", { class: "placeholder" },
-        "Capture a frame, or load an image file, to begin."));
+    const zoomBtn = this.q('[data-act="zoom-roi"]');
+    if (zoomBtn) { zoomBtn.textContent = "Zoom to ROI"; zoomBtn.classList.remove("armed"); }
+    // Prefer the live feed over the idle placeholder when the camera is
+    // connected -- a retake almost always means "let me see live and reposition".
+    this.refreshCaptureViewer();
     this.q('[data-role="metrics"]').replaceChildren(
       el("div", { class: "hint" }, "No analysis yet."));
     this.q('[data-role="table"]').replaceChildren();
@@ -1308,6 +1402,15 @@ class TestTab {
 }
 
 const Tests = {};
+
+/** Whichever test tab is currently on screen, if any -- tab 1 and tab 5 do not
+ * have a capture viewer to refresh. Called whenever the camera's connect state
+ * changes, so a test tab picks up a live feed appearing or disappearing without
+ * the operator having to leave and re-enter it. */
+function refreshActiveTestTab() {
+  const activeTab = $$("nav.tabs button.active")[0]?.dataset.tab;
+  Tests[activeTab]?.refreshCaptureViewer();
+}
 
 /* ======================================================== DATABASE TAB */
 
