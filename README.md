@@ -50,13 +50,15 @@ stops the server. Saved runs are kept; anything captured but not saved is lost.
 ### Camera
 
 The resolution dropdown is populated before you even connect, defaulting to
-1920×1080. That default is applied the moment you press Connect — previously
-nothing was requested at all on the first connect, so the device fell back to
-whatever low-bandwidth mode its own driver prefers, commonly 1280×720 regardless
-of what the dropdown showed. Changing the dropdown while already connected now
-reconnects with the new mode immediately rather than only taking effect on the
-next Connect. The device still negotiates to the nearest resolution it actually
-supports; the real result is always shown in the status line. **Detect exact
+1280×720 — more reliable across devices than a higher mode that may not
+negotiate cleanly. That default is applied the moment you press Connect —
+previously nothing was requested at all on the first connect, so the device
+fell back to whatever mode its own driver prefers. Changing the dropdown while
+already connected now reconnects with the new mode immediately rather than
+only taking effect on the next Connect. Pick a higher resolution from the
+dropdown (or **Detect exact modes**, below) if your device supports it and you
+need the extra detail. The device still negotiates to the nearest resolution
+it actually supports; the real result is always shown in the status line. **Detect exact
 modes** runs a one-time validated sweep of every resolution the connected device
 supports, replacing the generic list with the confirmed one — this is no longer
 run automatically on every connect, since on most DirectShow drivers each mode
@@ -104,6 +106,14 @@ suppress the real background and material peaks.
 The collapse tab defaults to the **whole frame**, because that test derives its
 pillar and gap positions from the platform's full 51 mm width — cropping into
 the platform rescales every result. The app flags it if you do.
+
+The **Database** tab's own **Zoom to ROI** button (next to the overlay/capture
+toggle, shown only for runs that have a stored ROI) applies the same crop-and-
+fit display transform to whichever stored image is on screen. It only appears
+when a saved ROI exists, and nothing is recomputed or redrawn — the overlay's
+annotations are whatever pixels were already saved, just cropped and scaled
+for a closer look. Switching between overlay and capture while zoomed keeps
+the same crop; opening a different run always starts un-zoomed.
 
 ### Choosing pores by hand (fusion tab)
 

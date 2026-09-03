@@ -1416,6 +1416,8 @@ function refreshActiveTestTab() {
 
 const Database = {
   current: null,
+  imageKind: "overlay",
+  zoomed: false,
 
   init() {
     $("#db-refresh").onclick = () => this.refresh();
@@ -1426,6 +1428,8 @@ const Database = {
     $("#db-save").onclick = () => this.save();
     $("#db-duplicate").onclick = () => this.duplicate();
     $("#db-delete").onclick = () => this.remove();
+    $("#db-zoom-roi").onclick = () => { this.zoomed = !this.zoomed; this.renderViewer(); };
+    $("#db-image-toggle").onchange = (e) => { this.imageKind = e.target.value; this.renderViewer(); };
   },
 
   async refresh() {
@@ -1460,26 +1464,12 @@ const Database = {
   async open(id) {
     const run = await api(`/api/runs/${id}`);
     this.current = run;
+    // Default to the annotated overlay where one was stored: it is what shows
+    // which measurements produced these numbers.
+    this.imageKind = run.overlay_path ? "overlay" : "capture";
+    this.zoomed = false;
     $("#db-detail").style.display = "block";
-
-    const viewer = $("#db-viewer");
-    if (run.image_path) {
-      // Default to the annotated overlay where one was stored: it is what shows
-      // which measurements produced these numbers.
-      const showOverlay = !!run.overlay_path;
-      const img = el("img", {
-        src: `/api/run-image/${run.id}?kind=${showOverlay ? "overlay" : "capture"}`,
-      });
-      viewer.replaceChildren(img);
-      $("#db-image-toggle").style.display = run.overlay_path ? "" : "none";
-      $("#db-image-toggle").value = showOverlay ? "overlay" : "capture";
-      $("#db-image-toggle").onchange = (e) => {
-        img.src = `/api/run-image/${run.id}?kind=${e.target.value}`;
-      };
-    } else {
-      viewer.replaceChildren(el("div", { class: "placeholder" }, "No image stored."));
-      $("#db-image-toggle").style.display = "none";
-    }
+    this.renderViewer();
 
     const F = [
       ["name", "Name", "text"], ["replicate_no", "Replicate no.", "number"],
@@ -1499,6 +1489,53 @@ const Database = {
 
     this.renderMetrics();
     this.renderMeasurements();
+  },
+
+  renderViewer() {
+    const run = this.current;
+    const viewer = $("#db-viewer");
+    const zoomBtn = $("#db-zoom-roi");
+    if (!run.image_path) {
+      viewer.replaceChildren(el("div", { class: "placeholder" }, "No image stored."));
+      $("#db-image-toggle").style.display = "none";
+      zoomBtn.style.display = "none";
+      return;
+    }
+
+    $("#db-image-toggle").style.display = run.overlay_path ? "" : "none";
+    $("#db-image-toggle").value = this.imageKind;
+
+    const roi = run.roi_json;
+    const hasRoi = !!(roi && roi.w > 0 && roi.h > 0);
+    zoomBtn.style.display = hasRoi ? "" : "none";
+    zoomBtn.textContent = this.zoomed ? "Show full image" : "Zoom to ROI";
+    zoomBtn.classList.toggle("armed", this.zoomed);
+
+    const src = `/api/run-image/${run.id}?kind=${this.imageKind}`;
+    if (this.zoomed && hasRoi) {
+      // Crop to the stored ROI and scale it up to fill the frame, fit not
+      // fill -- a display transform only, exactly like the capture tabs'
+      // "Zoom to ROI". The image itself (overlay or capture) is not touched
+      // or redrawn, just cropped and scaled for viewing.
+      const canvas = el("canvas");
+      viewer.replaceChildren(canvas);
+      const img = new Image();
+      img.onload = () => {
+        canvas.width = img.naturalWidth;
+        canvas.height = img.naturalHeight;
+        const ctx = canvas.getContext("2d");
+        ctx.fillStyle = "#0d0f12";
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        const factor = Math.min(canvas.width / roi.w, canvas.height / roi.h);
+        const offsetX = (canvas.width - roi.w * factor) / 2;
+        const offsetY = (canvas.height - roi.h * factor) / 2;
+        ctx.drawImage(img, roi.x, roi.y, roi.w, roi.h,
+          offsetX, offsetY, roi.w * factor, roi.h * factor);
+      };
+      img.src = src;
+    } else {
+      viewer.replaceChildren(el("img", { src }));
+    }
   },
 
   renderMetrics() {

@@ -30,8 +30,8 @@ TEST_TYPES = ("uniformity", "fusion", "collapse")
 
 # ---------------------------------------------------------------- camera
 
-DEFAULT_WIDTH = 1920
-DEFAULT_HEIGHT = 1080
+DEFAULT_WIDTH = 1280
+DEFAULT_HEIGHT = 720
 JPEG_QUALITY = 85
 STREAM_FPS = 15
 
