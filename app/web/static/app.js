@@ -1568,7 +1568,13 @@ const Database = {
     $("#db-measurements").replaceChildren(...run.measurements.map((m) => {
       const box = el("input", {
         type: "checkbox", ...(m.included ? { checked: "" } : {}),
-        onchange: () => { m.included = box.checked; },
+        // Recompute immediately, exactly like the capture tabs' own checklist --
+        // a checkbox that silently sets a flag until a separate button is found
+        // and pressed reads as broken, not as "recompute is a manual step".
+        onchange: () => {
+          m.included = box.checked;
+          this._applyRecompute().catch((e) => status(e.message, "bad"));
+        },
       });
       const raw = m.raw || {};
       const value = raw.thickness_mm !== undefined ? `${num(raw.thickness_mm, 4)} mm`
@@ -1579,7 +1585,10 @@ const Database = {
     }));
   },
 
-  async recompute() {
+  /** POST the current measurements/params and apply the returned results.
+   * Shared by the explicit Recompute button and the per-measurement checkboxes
+   * (which recompute on every toggle without a separate status message). */
+  async _applyRecompute() {
     const run = this.current;
     const r = await post(`/api/test/${run.test_type}/recompute`, {
       measurements: run.measurements,
@@ -1590,7 +1599,13 @@ const Database = {
     });
     run.results_json = { ...run.results_json, ...r.results };
     this.renderMetrics();
-    status("Recomputed from stored measurements.", "good");
+  },
+
+  async recompute() {
+    try {
+      await this._applyRecompute();
+      status("Recomputed from stored measurements.", "good");
+    } catch (e) { status(e.message, "bad"); }
   },
 
   async reanalyze() {

@@ -36,9 +36,13 @@ Then open <http://127.0.0.1:8000>.
    corner on the image to set the region of interest, then **Calculate**.
    Tick **Show preprocessing steps** to see every stage of the pipeline.
    **Save to database** stores the photo, the parameters and the results together.
-3. **Tab 5** — browse, edit, recompute and export. *Recompute* re-runs the
-   formulas over the stored measurements instantly; *Re-analyze* runs the whole
-   pipeline again on the stored photograph.
+3. **Tab 5** — browse, edit, recompute and export. Ticking or unticking a
+   measurement in the checklist recomputes the metrics immediately, the same as
+   in tabs 2–4 — no separate step needed. **Recompute** is still there for
+   re-running the formulas after changing a field like nozzle diameter without
+   touching any checkbox; **Re-analyze** runs the whole pipeline again on the
+   stored photograph. Nothing is written to the database until **Save
+   changes**.
 
 Each test tab carries the equations it uses in a panel on the right, with its
 symbols defined, so the numbers in the results table can be read against the
