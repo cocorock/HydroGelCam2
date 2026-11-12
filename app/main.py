@@ -140,9 +140,7 @@ def favicon():
 
 @app.get("/api/camera/devices")
 def camera_devices():
-    return {"devices": devices.list_devices(),
-            "backends": list(devices.BACKENDS),
-            "default_backend": devices.DEFAULT_BACKEND}
+    return {"devices": devices.list_devices()}
 
 
 @app.post("/api/camera/open")
@@ -150,7 +148,6 @@ async def camera_open(payload: dict):
     try:
         return stream.session.open(
             index=int(payload.get("index", 0)),
-            backend=payload.get("backend", devices.DEFAULT_BACKEND),
             width=payload.get("width"),
             height=payload.get("height"),
             name=payload.get("name"),

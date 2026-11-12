@@ -177,9 +177,6 @@ const Camera = {
     const info = await api("/api/camera/devices");
     $("#cam-device").replaceChildren(
       ...info.devices.map((d) => el("option", { value: d.index }, `${d.index}: ${d.name}`)));
-    $("#cam-backend").replaceChildren(
-      ...info.backends.map((b) =>
-        el("option", { value: b, ...(b === info.default_backend ? { selected: "" } : {}) }, b)));
     if (!info.devices.length) status("No cameras found.", "bad");
   },
 
@@ -190,7 +187,6 @@ const Camera = {
       status("Connecting…");
       const st = await post("/api/camera/open", {
         index: parseInt(sel.value, 10),
-        backend: $("#cam-backend").value,
         name: sel.selectedOptions[0]?.textContent,
         ...mode,
       });
@@ -215,7 +211,7 @@ const Camera = {
       viewer.replaceChildren(
         el("img", { src: `/api/camera/stream?t=${Date.now()}`, alt: "Live camera" }));
       $("#cam-status").textContent =
-        `Connected: ${st.device_name || st.device_index} via ${st.backend} — ${st.width}×${st.height}`;
+        `Connected: ${st.device_name || st.device_index} — ${st.width}×${st.height}`;
       // A plain connect no longer runs the validation sweep (see stream.py), so
       // st.modes is normally empty here and the candidate list picked before
       // connecting is left alone; this only replaces it once detect-modes has
@@ -236,36 +232,62 @@ const Camera = {
 
   renderControls() {
     const host = $("#cam-controls");
-    const props = Object.values(this.capabilities);
-    if (!props.length) {
-      host.replaceChildren(el("div", { class: "hint" },
-        "Connect a camera to probe its controls."));
+    const all = Object.values(this.capabilities);
+    if (!all.length) {
+      host.replaceChildren(el("div", { class: "hint" }, this.isOpen
+        ? "This camera reports no adjustable controls."
+        : "Connect a camera to read its controls."));
       return;
     }
-    host.replaceChildren(...props.map((p) => this.controlRow(p)));
+    // Only what the device actually offers gets a row; the rest is named once
+    // underneath rather than drawn as a dead, greyed-out slider.
+    const rows = [];
+    let group = null;
+    for (const p of all.filter((c) => c.supported)) {
+      if (p.group !== group) {
+        group = p.group;
+        rows.push(el("h4", { class: "control-group" }, p.group_label || group));
+      }
+      rows.push(this.controlRow(p));
+    }
+    const missing = all.filter((c) => !c.supported).map((c) => c.label);
+    if (missing.length) {
+      rows.push(el("div", { class: "hint" }, `Not offered by this camera: ${missing.join(", ")}.`));
+    }
+    host.replaceChildren(...rows);
   },
 
   controlRow(p) {
-    const supported = p.supported;
+    // A manual control whose Auto is on is driven by the camera itself: shown,
+    // but not draggable until Auto is switched off.
+    const auto = p.auto_key ? this.capabilities[p.auto_key] : null;
+    const locked = !!auto && auto.value > 0.5;
+    const row = (control, valueText) => el("div", {
+      class: `slider-row${locked ? " locked" : ""}`,
+      title: locked ? `Set automatically — untick ${auto.label} to adjust` : (p.hint || ""),
+    }, el("label", {}, p.label), control, el("span", { class: "val" }, valueText));
+
     if (p.kind === "toggle") {
-      const box = el("input", {
+      return row(el("input", {
         type: "checkbox", ...(p.value > (p.lo + p.hi) / 2 ? { checked: "" } : {}),
-        ...(supported ? {} : { disabled: "" }),
         onchange: (e) => this.set(p.key, e.target.checked ? p.hi : p.lo),
-      });
-      return el("div", { class: `slider-row ${supported ? "" : "unsupported"}` },
-        el("label", {}, p.label), box,
-        el("span", { class: "val" }, supported ? "" : "n/a"));
+      }), "");
     }
-    const out = el("span", { class: "val" }, supported ? num(p.value, 0) : "n/a");
+    if (p.kind === "choice") {
+      return row(el("select", {
+        onchange: (e) => this.set(p.key, parseInt(e.target.value, 10)),
+      }, ...p.choices.map((c) => el("option", {
+        value: c.value, ...(c.value === p.value ? { selected: "" } : {}),
+      }, c.label))), "");
+    }
+    const out = el("span", {}, num(p.value, 0));
     const range = el("input", {
       type: "range", min: p.lo, max: p.hi, step: p.step || 1, value: p.value,
-      ...(supported ? {} : { disabled: "" }),
+      ...(locked ? { disabled: "" } : {}),
       oninput: (e) => { out.textContent = e.target.value; },
       onchange: (e) => this.set(p.key, parseFloat(e.target.value)),
     });
-    return el("div", { class: `slider-row ${supported ? "" : "unsupported"}` },
-      el("label", {}, p.label), range, out);
+    return row(range, out);
   },
 
   async set(key, value) {
@@ -275,6 +297,9 @@ const Camera = {
         if (this.capabilities[k]) this.capabilities[k].value = v;
       }
     } catch (e) { status(e.message, "bad"); }
+    // Redrawn either way: toggling an Auto locks or frees its slider, and the
+    // read-back is the truth if the camera did not accept the value.
+    this.renderControls();
   },
 
   async saveProfile() {

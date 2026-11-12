@@ -1,24 +1,20 @@
-"""USB camera enumeration and backend selection.
+"""USB camera enumeration. DirectShow only.
 
-OpenCV cannot report device names, only indices. On Windows pygrabber reads the
-DirectShow friendly names, which is what makes "USB Endoscope" distinguishable
-from "Integrated Webcam" in the dropdown. Everywhere else we fall back to
-probing indices.
+OpenCV cannot report device names, only indices; DirectShow lists the friendly
+names ("Logi Webcam C920e") in the same order OpenCV's DirectShow backend
+numbers the devices, which is what makes the dropdown readable.
 """
 
 from __future__ import annotations
 
-import sys
-
 import cv2
 
-BACKENDS = {
-    "dshow": cv2.CAP_DSHOW,   # Windows default: exposes the most UVC properties
-    "msmf": cv2.CAP_MSMF,     # Windows fallback: better with some 4K sensors
-    "any": cv2.CAP_ANY,
-}
+from app.camera import dshow
 
-DEFAULT_BACKEND = "dshow" if sys.platform == "win32" else "any"
+# DirectShow is the only backend: it is the one whose devices carry the UVC
+# controls (see controls.py), and the only one in use on the measurement rig.
+BACKEND = "dshow"
+BACKEND_ID = cv2.CAP_DSHOW
 
 # Modes offered in the resolution dropdown, filtered at connect time to the ones
 # the device actually accepts.
@@ -28,36 +24,18 @@ CANDIDATE_MODES = (
 )
 
 
-def backend_id(name: str) -> int:
-    return BACKENDS.get(name, cv2.CAP_ANY)
-
-
 def list_devices() -> list[dict]:
     """Return [{index, name}] for every attached camera."""
-    names = _directshow_names()
+    names = dshow.device_names()
     if names:
         return [{"index": i, "name": n} for i, n in enumerate(names)]
     return [{"index": i, "name": f"Camera {i}"} for i in _probe_indices()]
 
 
-def _directshow_names() -> list[str]:
-    if sys.platform != "win32":
-        return []
-    try:
-        from pygrabber.dshow_graph import FilterGraph
-    except ImportError:
-        return []
-    try:
-        return list(FilterGraph().get_input_devices())
-    except Exception:
-        # pygrabber raises assorted COM errors when no device is present.
-        return []
-
-
 def _probe_indices(limit: int = 8) -> list[int]:
     found = []
     for i in range(limit):
-        cap = cv2.VideoCapture(i, backend_id(DEFAULT_BACKEND))
+        cap = cv2.VideoCapture(i, BACKEND_ID)
         if cap.isOpened():
             found.append(i)
         cap.release()

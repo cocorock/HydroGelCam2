@@ -183,11 +183,15 @@ tr.excluded td { opacity: .4; text-decoration: line-through; }
 .thumb .err { font-family: var(--mono); font-size: 11px; color: var(--muted); }
 .thumb button { position: absolute; top: 3px; right: 3px; padding: 0 6px; font-size: 12px; }
 
-.slider-row { display: grid; grid-template-columns: 1fr 90px 52px; gap: 8px; align-items: center; margin-bottom: 6px; }
+.slider-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.5fr) 40px; gap: 8px; align-items: center; margin-bottom: 6px; }
 .slider-row label { margin: 0; }
 .slider-row input[type=range] { width: 100%; padding: 0; }
+.slider-row input[type=checkbox] { justify-self: start; }
+.slider-row select { padding: 3px 6px; }
 .slider-row .val { font-family: var(--mono); font-size: 12px; color: var(--muted); text-align: right; }
-.slider-row.unsupported { opacity: .38; }
+.slider-row.locked input[type=range], .slider-row.locked .val { opacity: .45; }
+.control-group { margin: 12px 0 6px; font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
+.control-group:first-child { margin-top: 0; }
 
 .stack { display: flex; flex-direction: column; gap: 4px; }
 .toolbar { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 10px; align-items: center; }

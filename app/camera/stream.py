@@ -29,9 +29,10 @@ class CameraSession:
         self._thread: threading.Thread | None = None
         self._stop = threading.Event()
 
+        self._controls = controls.CameraControls()
+
         self.device_index: int | None = None
         self.device_name: str | None = None
-        self.backend: str = devices.DEFAULT_BACKEND
         self.capabilities: dict[str, dict[str, Any]] = {}
         self.modes: list[dict] = []
         self.last_error: str | None = None
@@ -45,7 +46,6 @@ class CameraSession:
     def open(
         self,
         index: int,
-        backend: str = devices.DEFAULT_BACKEND,
         width: int | None = None,
         height: int | None = None,
         name: str | None = None,
@@ -62,11 +62,11 @@ class CameraSession:
         with self._lock:
             self._close_locked()
 
-            cap = cv2.VideoCapture(index, devices.backend_id(backend))
+            cap = cv2.VideoCapture(index, devices.BACKEND_ID)
             if not cap.isOpened():
                 cap.release()
                 self.last_error = (
-                    f"Could not open camera {index} with the {backend} backend. "
+                    f"Could not open camera {index}. "
                     "It may be in use by another application."
                 )
                 raise RuntimeError(self.last_error)
@@ -78,7 +78,6 @@ class CameraSession:
             self._cap = cap
             self.device_index = index
             self.device_name = name
-            self.backend = backend
             self.last_error = None
             # Not a full sweep of every candidate resolution here -- on many
             # DirectShow drivers each mode change briefly restarts the video
@@ -86,7 +85,7 @@ class CameraSession:
             # how long a connect took. `detect_modes()` runs that sweep, but only
             # when explicitly asked for.
             self.modes = []
-            self.capabilities = controls.probe(cap)
+            self.capabilities = self._controls.open(index)
 
             self._stop.clear()
             self._thread = threading.Thread(
@@ -136,6 +135,7 @@ class CameraSession:
         if self._cap is not None:
             self._cap.release()
             self._cap = None
+        self._controls.close()
         with self._frame_lock:
             self._frame = None
         self.capabilities = {}
@@ -184,7 +184,7 @@ class CameraSession:
         with self._lock:
             if self._cap is None:
                 raise RuntimeError("No camera is open.")
-            applied = controls.apply(self._cap, values)
+            applied = self._controls.apply(values)
         for key, val in applied.items():
             if key in self.capabilities:
                 self.capabilities[key]["value"] = val
@@ -194,7 +194,7 @@ class CameraSession:
         with self._lock:
             if self._cap is None:
                 return {}
-            return controls.read_all(self._cap)
+            return self._controls.read_all()
 
     def status(self) -> dict[str, Any]:
         frame = self.latest_frame()
@@ -202,7 +202,7 @@ class CameraSession:
             "open": self.is_open,
             "device_index": self.device_index,
             "device_name": self.device_name,
-            "backend": self.backend,
+            "backend": devices.BACKEND,
             "width": 0 if frame is None else int(frame.shape[1]),
             "height": 0 if frame is None else int(frame.shape[0]),
             "capabilities": self.capabilities,

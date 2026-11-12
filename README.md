@@ -69,12 +69,27 @@ run automatically on every connect, since on most DirectShow drivers each mode
 change briefly restarts the video stream, and sweeping nine of them was the
 single largest cost in how long a connect took.
 
-Each slider's range is discovered from the device itself rather than guessed. A
-generic UVC brightness span, say, might be −64…64, but a specific camera's real
-range could be 0…255 or something else entirely; asking the driver to clamp a
-deliberately absurd value and reading back where it landed reveals the true
-bound directly; no guessed range means the sliders now use their full real
-travel, not a hard-coded approximation.
+The camera is always opened through **DirectShow**; there is no backend
+choice.
+
+**Image controls** are read straight from the camera through DirectShow's own
+control interfaces — the same ones Logi Tune and the Windows camera dialog
+use — so each one shows exactly the range, step and current value the device
+reports, and only the controls the device actually has get a row. On a
+Logitech C920e that is: brightness, contrast, saturation, sharpness and gain
+(0–255); exposure with **Auto exposure**; **Low-light compensation**;
+backlight compensation; **Anti-flicker** (50 Hz / 60 Hz — match the mains
+frequency of the room lighting); white-balance temperature (2000–6500 K) with
+**Auto white balance**; focus (0–250, step 5) with **Autofocus**; and zoom,
+pan and tilt. While an Auto box is ticked its slider is greyed out, because
+the camera is setting that value itself; unticking it keeps whatever value
+the camera had settled on, and from then on the slider is yours. Saved camera
+profiles store the Auto states too, and a value from a profile saved on a
+different camera is clamped into this one's range before it is sent.
+
+OpenCV's own property access is no longer used for these: it exposes no
+ranges, cannot tell automatic from manual, has no anti-flicker setting, and on
+the C920e it misreports several controls as `-1`.
 
 ### Region of interest
 
