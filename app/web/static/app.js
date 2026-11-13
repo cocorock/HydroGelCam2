@@ -1439,6 +1439,54 @@ function refreshActiveTestTab() {
 
 /* ======================================================== DATABASE TAB */
 
+/* Columns of the run-detail measurement table, one set per test, matching the
+ * tables tabs 2–4 show after Calculate. Each is
+ * [header, cell(raw, measurement), cell class, warn(raw) -> colour it]. */
+const dash = (v) => v ?? "—";
+const statusPill = (text, kind) => el("span", { class: `pill ${kind}` }, text);
+const RUN_COLUMNS = {
+  uniformity: [
+    ["Measurement", (w, m) => m.label || `#${m.index_no}`],
+    ["Filament", (w) => dash(w.filament), "num"],
+    ["Position", (w) => dash(w.position), "num"],
+    ["x px", (w) => dash(w.x_full), "num"],
+    ["Top px", (w) => dash(w.top_full), "num"],
+    ["Bottom px", (w) => dash(w.bottom_full), "num"],
+    ["Thickness px", (w) => dash(w.thickness_px), "num"],
+    ["Thickness mm", (w) => (w.thickness_mm == null ? "not found" : num(w.thickness_mm, 4)), "num"],
+  ],
+  fusion: [
+    ["Pore", (w) => `#${w.size_class}`],
+    ["a mm", (w) => num(w.arista_mm, 2), "num"],
+    ["d mm", (w) => num(w.filament_d_mm, 2), "num"],
+    ["Status", (w) => statusPill(w.status,
+      w.status === "open" ? "good" : w.status === "closed" ? "warn" : "bad")],
+    ["Source", (w) => {
+      const manual = (w.selection || "auto").startsWith("manual");
+      return statusPill(manual ? "manual" : "auto", manual ? "warn" : "");
+    }],
+    ["Centroid px", (w) => (w.centroid ? w.centroid.map((v) => Math.round(v)).join(", ") : "—"), "num"],
+    ["At mm²", (w) => num(w.at_mm2, 3), "num"],
+    ["Aa mm²", (w) => num(w.aa_mm2, 3), "num"],
+    ["L mm", (w) => num(w.perimeter_mm, 3), "num"],
+    ["Dfr %", (w) => num(w.dfr_percent, 2), "num"],
+    ["Pr", (w) => num(w.pr, 4), "num", (w) => w.pr_in_window === false],
+    ["C", (w) => num(w.circularity, 4), "num"],
+    ["Flags", (w) => (w.flags || []).join(" ")],
+  ],
+  collapse: [
+    ["Gap", (w) => `#${w.gap_no}`],
+    ["Nominal mm", (w) => num(w.nominal_gap_mm, 1), "num"],
+    ["Status", (w) => statusPill(w.status, w.status === "bridged" ? "good" : "bad")],
+    ["A_sag mm²", (w) => num(w.a_sag_mm2, 3), "num"],
+    ["A_max mm²", (w) => num(w.a_max_mm2, 3), "num"],
+    ["At strip mm²", (w) => num(w.at_strip_mm2, 3), "num"],
+    ["df mm", (w) => num(w.df_mm, 4), "num"],
+    ["Cf %", (w) => num(w.cf_percent, 2), "num"],
+    ["θ °", (w) => num(w.theta_deg, 2), "num"],
+  ],
+};
+
 const Database = {
   current: null,
   imageKind: "overlay",
@@ -1590,24 +1638,36 @@ const Database = {
 
   renderMeasurements() {
     const run = this.current;
-    $("#db-measurements").replaceChildren(...run.measurements.map((m) => {
-      const box = el("input", {
-        type: "checkbox", ...(m.included ? { checked: "" } : {}),
-        // Recompute immediately, exactly like the capture tabs' own checklist --
-        // a checkbox that silently sets a flag until a separate button is found
-        // and pressed reads as broken, not as "recompute is a manual step".
-        onchange: () => {
-          m.included = box.checked;
-          this._applyRecompute().catch((e) => status(e.message, "bad"));
-        },
-      });
-      const raw = m.raw || {};
-      const value = raw.thickness_mm !== undefined ? `${num(raw.thickness_mm, 4)} mm`
-        : raw.aa_mm2 !== undefined ? `Aa ${num(raw.aa_mm2, 3)} mm²`
-        : `Cf ${num(raw.cf_percent, 2)} %`;
-      return el("div", {}, box, el("span", {}, m.label || `#${m.index_no}`),
-        el("span", { class: "val" }, value));
-    }));
+    const cols = RUN_COLUMNS[run.test_type] || [];
+    $("#db-measurements").replaceChildren(el("table", {},
+      el("thead", {}, el("tr", {},
+        el("th", {}, "Use"), ...cols.map(([h, , cls]) => el("th", cls ? { class: cls } : {}, h)))),
+      el("tbody", {}, ...run.measurements.map((m) => {
+        const w = m.raw || {};
+        // A uniformity position where no filament edge was found has nothing
+        // to include, same as in tab 2.
+        const notFound = run.test_type === "uniformity" && w.thickness_mm == null;
+        const box = el("input", {
+          type: "checkbox", ...(m.included ? { checked: "" } : {}),
+          ...(notFound ? { disabled: "" } : {}),
+          // Recompute immediately, exactly like the capture tabs' own checklist --
+          // a checkbox that silently sets a flag until a separate button is found
+          // and pressed reads as broken, not as "recompute is a manual step".
+          onchange: () => {
+            m.included = box.checked;
+            row.classList.toggle("excluded", !m.included);
+            this._applyRecompute().catch((e) => status(e.message, "bad"));
+          },
+        });
+        const row = el("tr", { class: m.included ? "" : "excluded" },
+          el("td", {}, box),
+          ...cols.map(([, cell, cls, warn]) => {
+            const td = el("td", cls ? { class: cls } : {}, cell(w, m));
+            if (warn?.(w)) td.style.color = "var(--warn)";
+            return td;
+          }));
+        return row;
+      }))));
   },
 
   /** POST the current measurements/params and apply the returned results.
